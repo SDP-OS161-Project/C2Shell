@@ -133,4 +133,90 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     return 0;
 }
 
+int sys_close(int fd)
+{
+    //reference: man7 documentation
+    //returns 0 on success, -1 on error, and errno is set to indicate the error
+    struct openfile *f = NULL;
+    struct vnode *vn;
+
+    if(fd < 0 || fd > OPEN_MAX)
+    {
+        return EBADF; //invalid id for file
+    }
+
+    f = curproc->fileTable[fd];
+    if(f == NULL)
+    {
+        return EBADF; //there isnt an open file with this fd
+    }
+    curproc->fileTable[fd] = NULL;
+
+    lock_acquire(f->lockFile);
+    f->countRef--;
+    if(f->countRef > 0)
+    {
+        return 0; //still in use
+    }
+
+    vn = f->vn;
+    f->vn = NULL;
+    if(vn != NULL)
+    {
+        vfs_close(vn); //closing the open file
+    }
+
+    kfree(f);
+    return 0;
+}
+
+int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
+{
+    struct openfile *fl;
+    struct vnode *vn;
+    struct iovec iov;
+    struct uio ku;
+    int res;
+
+    char kBuffer[128];
+    size_t nRead;
+
+    if(fd < 0 || fd > OPEN_MAX)
+    {
+        return EBADF; //invalid id for file
+    }
+
+    fl = curproc->fileTable[fd];
+    if(fl == NULL)
+    {
+        return EBADF; //there isnt an open file with this fd
+    }
+    curproc->fileTable[fd] = NULL;
+
+    vn = f->vn;
+    if(vn == NULL)
+    {
+        return EBADF; 
+    }
+
+    uio_kinit(&iov, &ku, kBuffer, bufLen, fl->offset, UIO_READ);
+
+    res = VOP_READ(fl->vn, &ku);
+    if(res)
+    {   // VOP_READ may return errors so we need this check in case 
+        return res;
+    }
+
+    nRead = bufLen - ku.uio_resid;
+    res = copyout(kBuffer, buffer, nRead);
+    if(res)
+    {   //check for user space memory errors while copying the data inside buffer
+        return res;
+    }
+
+    fl->offset += nRead;
+    *returnVal = nRead;
+    return 0;
+}
+
 #endif

@@ -20,7 +20,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
 
 int sys_close(int fd);
 
-ssize_t sys_read(int fd, const void *buffer, size_t bufLen, int32_t *returnVal);
+int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal);
 
 #endif
 
