@@ -135,7 +135,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
 
 int sys_close(int fd)
 {
-    //reference: man7 documentation
+    //reference: ops class documentation
     //returns 0 on success, -1 on error, and errno is set to indicate the error
     struct openfile *f = NULL;
     struct vnode *vn;
@@ -216,6 +216,103 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 
     fl->offset += nRead;
     *returnVal = nRead;
+    return 0;
+}
+
+int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
+{
+    struct openfile *fl;
+    struct vnode *vn;
+    struct iovec iov;
+    struct uio ku;
+    int res;
+    size_t nWrite;
+    char *kBuffer = kmalloc(bufLen);
+    if(kBuffer == NULL)
+    {
+        return ENOMEM;
+    }
+
+    if(fd < 0 || fd > OPEN_MAX)
+    {
+        return EBADF; //invalid id for file
+    }
+
+    fl = curproc->fileTable[fd];
+    if(fl == NULL)
+    {
+        return EBADF; //there isnt an open file with this fd
+    }
+
+    res = copyin(buffer, kBuffer, bufLen);
+    if(res)
+    {
+        kfree(kBuffer);
+        return res;
+    }
+
+    uio_kinit(&iov, &ku, kBuffer, bufLen, fl->offset, UIO_WRITE);
+
+    res = VOP_WRITE(f->vn, &ku);
+    if(res)
+    {
+        return res;
+    }
+
+    nWrite = bufLen - ku.uio_resid;
+    fl->offset += nWrite;
+    *returnVal = nWrtie;
+    return 0; 
+}
+
+int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
+{
+    struct openfile *fl;
+    off_t newOff;
+    struct stat st;
+    int res;
+
+    if(fd < 0 || fd > OPEN_MAX)
+    {
+        return EBADF; //invalid id for file
+    }
+
+    fl = curproc->fileTable[fd];
+    if(fl == NULL)
+    {
+        return EBADF; //there isnt an open file with this fd
+    }
+
+    switch(whence)
+    {
+        case SEEK_SET:
+            newOff = pos;
+            break;
+        case SEEK_CUR:
+            newOff = fl->offset + pos;
+            break;
+        case SEEK_END:
+        {
+            res = VOP_STAT(fl->vn,  &st);
+            if(res)
+            {
+                return res;
+            }
+
+            newOff = st.st_size + pos;
+            break;
+        }
+        default:
+            return EINVAL;
+    }
+
+    if(newOff < 0)
+    {
+        return EINVAL;
+    }
+
+    fl->offset = newOff;
+    *returnVal = newOff;
     return 0;
 }
 
