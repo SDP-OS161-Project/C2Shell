@@ -30,6 +30,8 @@ int sys_dup2(int oldFd, int newFd, int *returnVal);
 
 int sys_chdir(userptr_t pathName);
 
+int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal);
+
 #endif
 
 #endif

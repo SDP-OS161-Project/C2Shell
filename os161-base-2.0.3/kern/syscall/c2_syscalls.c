@@ -438,4 +438,41 @@ int sys_chdir(userptr_t pathName)
     return 0;
 }
 
+/*
+Error codes:
+- ENOENT: a component of the pathname no longer exists
+- EIO: a hard io error occurred
+- EFAULT: buf points to an invalid address space
+*/
+int sys_getcwd(userptr_t buf, size_t buflen, int *retval)
+{
+    int result;
+    struct iovec iov;
+    struct uio ku;
+
+    /* Validate arguments */
+    if (buf == NULL) {
+        return EFAULT;
+    }
+
+    /* Initialize kernel-side UIO for writing the path into user buffer */
+    uio_uinit(&iov, &ku, buf, buflen, 0, UIO_READ);
+
+    /* Ask the VFS for the current working directory */
+    result = vfs_getcwd(&ku);
+    if (result) {
+        /*
+         * vfs_getcwd() already returns the correct codes:
+         *   ENOENT if cwd vanished
+         *   EIO on disk error
+         *   EFAULT if copyout failed (invalid user pointer)
+         */
+        return result;
+    }
+
+    /* Success: uio_resid is bytes left, so subtract from buflen */
+    *retval = buflen - ku.uio_resid;
+    return 0;
+}
+
 #endif
