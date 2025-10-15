@@ -28,6 +28,8 @@ int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal);
 
 int sys_dup2(int oldFd, int newFd, int *returnVal);
 
+int sys_chdir(userptr_t pathName);
+
 #endif
 
 #endif

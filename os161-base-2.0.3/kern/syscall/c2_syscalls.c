@@ -374,4 +374,68 @@ int sys_dup2(int oldFd, int newFd, int *returnVal)
     return 0;
 }
 
+/*
+Error codes:
+- ENODEV: device prefix of pathname did not exist
+- ENOTDIR: a non-final component of the path prefix is not a directory
+- ENOTDIR: the final component of the path prefix is not a directory
+- ENOENT: did not exist
+- EIO: a hard io error occurred
+- EFAULT: pathName points to an invalid address
+*/
+int sys_chdir(userptr_t pathName)
+{
+    size_t len;
+    struct vnode *vn;
+    int err;
+    char *kernB;
+
+    if (pathName == NULL)
+    {
+        return EFAULT;
+    }
+
+    kernB = (char *) kmalloc(PATH_MAX * sizeof(char) + 1);
+    if(kernB == NULL)
+    {
+        return ENOMEM;
+    }
+
+    err = copyinstr((const_userptr_t) pathName, kernB, PATH_MAX, &len);
+    if (err)
+    {
+        kfree(kernB);
+        return err;
+    }
+
+    err = vfs_lookup(kernB, &vn);
+    if (err)
+    {
+        kfree(kernB);
+        return err;
+    }
+    kfree(kernB);
+
+    //check if it is a directory
+    struct stat fileStat;
+    err = VOP_STAT(vn, &fileStat);
+    if (err)
+    {
+        vfs_close(vn);
+        return err;
+    }
+    
+    if (fileStat.st_mode & S_IFDIR == 0)
+    {
+        vfs_close(vn);
+        return ENOTDIR;
+    }
+
+    //it is a directory
+    vfs_close(curproc->p_cwd);
+    curproc->p_cwd = vn;
+
+    return 0;
+}
+
 #endif
