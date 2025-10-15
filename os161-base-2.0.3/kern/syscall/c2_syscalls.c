@@ -315,5 +315,63 @@ int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
     *returnVal = newOff;
     return 0;
 }
+/*
+Error codes:
+EBADF: The file descriptor is not valid or is not open.
+EMFILE: The file descriptor table for the process is full or limit
+    was reached.
+ENFILE: The system-wide limit on the total number of open files has
+    been reached.
+*/
+int sys_dup2(int oldFd, int newFd, int *returnVal)
+{
+    struct file *oldfile;
+    struct file *newfile;
+    struct proc *p = curproc;
+
+    /* Validate file descriptor range */
+    if (oldFd < 0 || oldFd >= OPEN_MAX || 
+        newFd < 0 || newFd >= OPEN_MAX)
+    {
+        return EBADF;
+    }
+
+    /* If oldFd == newFd, do nothing per POSIX */
+    if (oldFd == newFd)
+    {
+        *retval = newFd;
+        lock_release(p->ft_lock);
+        return 0;
+    }
+
+    /* Check that oldFd is actually open */
+    /* TODO: Add check for global file count to be less or equal
+         than system max open files (SYSTEM_OPEN_MAX)
+    */
+    lock_acquire(p->ft_lock);
+    oldfile = p->filetable[oldFd];
+    if (oldfile == NULL)
+    {
+        lock_release(p->ft_lock);
+        return EBADF;
+    }
+
+    /* If newFd already open, close it first */
+    newfile = p->filetable[newFd];
+    if (newfile != NULL)
+    {
+        /* Drop the old reference */
+        file_decref(newfile);
+        p->filetable[newFd] = NULL;
+    }
+
+    /* Increment reference count on the existing file */
+    file_incref(oldfile);
+    p->filetable[newFd] = oldfile;
+
+    *retval = newFd;
+    lock_release(p->ft_lock);
+    return 0;
+}
 
 #endif

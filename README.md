@@ -95,4 +95,36 @@ A simple implementation of this system call that enables to clear the space used
 
 ## Testing
 
-Inside *user/bin/sh* there is a shell that allows the user to test the system calls. When executed, it prints a prompt and allows the developer to type simple commands to run other programs. 
+Inside *user/bin/sh* there is a shell that allows the user to test the system calls. When executed, it prints a prompt and allows the developer to type simple commands to run other programs.
+
+---
+---
+
+# Implementation
+
+## *C2_syscalls.h/c*
+
+This two files are used to implement the syscalls required for the purpose of this project. This was done for making it easier to keep track of the progress of this project.
+
+The system calls are implemented following the documentation provided by OS161 under the directory *man* of this project. Notice that a few adjustments were made since the documentation is reporting the user level explanation while the system call are implemented at kernel level.
+
+### *sys_open*
+
+* userptr_t pathName: 
+* int openFlags:
+* mode_t modeFile:
+* int32_t *returnVal:
+
+### *sys_close*
+
+* int fd
+
+### *sys_read*
+
+
+
+### *sys_write*
+
+### *sys_lseek*
+
+### *sys_dup2*
