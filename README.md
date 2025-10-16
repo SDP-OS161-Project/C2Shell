@@ -165,11 +165,26 @@ The kernel then uses *copyout* to safely transfer this data from the kernel buff
 After the data is successfully copied, the file offset is updated to reflect the new position in the file, ensuring that subsequent reads continue from where the last one ended. The number of bytes read is stored in returnVal, which is then passed back to the user program. If all steps succeed, the function returns 0, indicating a successful operation.
 
 ### *sys_write*
+Writes up to *bufLen bytes* to the file specified by *fd*, at the location in the file specified by the current seek poistion of the filem taking the data from the space pointed to by *buffer*. The file must be open for writing, ensuring no error is triggered during the process. The current seek position of the file is advanced by the number of bytes written.
+Each write/read operation is atomic relative to other I/O to the same file. 
 
-* int fd
-* userptr_t buffer
-* size_t bufLen
-* ssize_t *returnVal
+* **int fd**
+* **userptr_t buffer**
+* **size_t bufLen**
+* **ssize_t \*returnVal**
+
+The first step is the validation of the file descriptor. The file descriptor *fd* cannot be a negative value or greater than the maximum valid descriptor *OPEN_MAX*. If it is outside this range, the function immediately returns the *EBADF* error code, indicating an invalid or non-existent file descriptor. The same error is also returned if the *fd* does not correspond to an open file in the process’s file table.
+Once the *fd* has been validated, the corresponding entry is retrieved from the current process’s file table. This entry, represented by a *struct openfile*, provides access to the file’s vnode, offset, access mode, and internal lock. If this entry is *NULL*, it means the file has not been opened, and the function again returns *EBADF*.
+Next, the function safely copies the data from user space into the previously allocated kernel buffer *kBuffer* using the *copyin* function.
+This prevents the kernel from directly accessing user memory and avoids invalid memory accesses that could lead to kernel crashes. If the copy fails, for exmaple, if the user buffer points to invalid memory, the function frees the allocated kernel buffer and returns the corresponding error code.
+Once the data is securely copied into the kernel, the function initializes two structures, *iovec* and *uio*, using *uio_kinit*.
+These structures describe the I/O operation for the VFS layer, including the buffer address, data length, file offset, and operation type, UIO_WRITE in this case.
+The actual write operation is then performed through the VFS interface by calling *VOP_WRITE*.
+This function writes up to *bufLen* bytes from the kernel buffer into the file represented by the *vnode*.
+If an error occurs during this stage, for example, due to permission issues or device errors, the function immediately returns the error code from *VOP_WRITE*.
+If the operation completes successfully, the number of bytes written is calculated as the difference between the requested size and the remaining bytes *uio_resid*.
+The file offset is then advanced by this number, ensuring that subsequent writes continue from the correct position within the file.
+Finally, the number of bytes successfully written is stored in *returnVal*, which is returned to the user process. If all steps succeed, the function returns 0 to indicate success.
 
 ### *sys_lseek*
 
