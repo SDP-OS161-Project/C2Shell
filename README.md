@@ -102,7 +102,7 @@ Inside *user/bin/sh* there is a shell that allows the user to test the system ca
 
 # Implementation
 
-## *C2_syscalls.h/c*
+## ***C2_syscalls.h/c***
 
 This two files are used to implement the syscalls required for the purpose of this project. This was done for making it easier to keep track of the progress of this project.
 
@@ -110,7 +110,7 @@ The system calls are implemented following the documentation provided by OS161 u
 
 Before starting the explanation of the system calls implemented in kernel side there are a few key points that we are going to discuss; the first regarding the signature of the system calls, in the *OS161* documentation the parameter *returnVal* does not appear since the user-level system call only needs the result while the kernel side needs both the return value and the error code (0 on success and the actual error code when an error occurs); the second is the usage of *userptr_t* that we introduced to separate what is in kernel and user space. The user-level system calls pass pointers to user meory, for example *const char \**. When these calls reach the kernel, the same address cannot be treated as a valid kernel pointer, that is why we use *userptr_t* type to mark user-space addresses, ensuring that the kernel accesses them safely.
 
-### *sys_open*
+### ***sys_open***
 Opens the file, device, or other kernel object named by the *pathName*. The *openFlags* parameter, specifies how to open the file, while *modeFile* is the optional argument that specifies in Unix which mode will the file be opened.
 
 * **userptr_t pathName** 
@@ -134,7 +134,7 @@ If the file is correctly opened a cycle into the *systemFileTable* makes sure th
 To allocate a slot in the process file table a search starts with the id 3 since the first three, 0, 1, and 2 are reserved for standard I/O. If the process table is fulle the *EMFILE* error is returned. In case of finding a free slot, the vnode is associated with the process, the offset is set, the reference count *countRefs* is initialized to 1, and the access mode is determined based on a mask betwee *openFlags* & *O_ACCMODE*. A pre-lock is also created for synchronization across concurrent accesses, if it fails all allocated resources are released, and *ENOMEM* error is returned.
 Finally the new file descriptor is copied into *returnVal* and the function returns 0 for the success.
 
-### *sys_close*
+### ***sys_close***
 The file handle fd is closed. Other file handles are not affected in any way, even if they are attatched to the same file.
 
 * **int fd**
@@ -144,7 +144,7 @@ Once the *fd* is checked the corresponding entry in the process's file table is 
 The function acquires the file's internal lock to safely update shared fields, such as the reference count that gets decremented to check whether some one is still using it or not. If the file is still in use it returns 0, otherwise the *vnode* associated with the file is closed using *vfs_close*. Once called, *vfs_close*, decrements the vnode's reference count and may trigger cleanup at the file system level.
 After that, the kernel frees the memory allocated for the *struct openfile*, and returns 0 if everything was successful.
 
-### *sys_read*
+### ***sys_read***
 Reads up to *bufLen bytes* from the file specified by *fd*, at the location in the file specified by the current seek position of the file, and stores them in the space pointed to by *buffer*. The file must be open for reading otherwise an error occurs.
 
 * **int fd**
@@ -164,7 +164,7 @@ Once the read operation completes successfully, the number of bytes actually rea
 The kernel then uses *copyout* to safely transfer this data from the kernel buffer into the user-provided buffer in user space. If an invalid user memory address is encountered during this step, the function returns an appropriate error, such as *EFAULT*.
 After the data is successfully copied, the file offset is updated to reflect the new position in the file, ensuring that subsequent reads continue from where the last one ended. The number of bytes read is stored in returnVal, which is then passed back to the user program. If all steps succeed, the function returns 0, indicating a successful operation.
 
-### *sys_write*
+### ***sys_write***
 Writes up to *bufLen bytes* to the file specified by *fd*, at the location in the file specified by the current seek poistion of the filem taking the data from the space pointed to by *buffer*. The file must be open for writing, ensuring no error is triggered during the process. The current seek position of the file is advanced by the number of bytes written.
 Each write/read operation is atomic relative to other I/O to the same file. 
 
@@ -186,25 +186,105 @@ If the operation completes successfully, the number of bytes written is calculat
 The file offset is then advanced by this number, ensuring that subsequent writes continue from the correct position within the file.
 Finally, the number of bytes successfully written is stored in *returnVal*, which is returned to the user process. If all steps succeed, the function returns 0 to indicate success.
 
-### *sys_lseek*
+### ***sys_lseek***
+Alters the current seek position of the file handle *fd* seeking to a new position based on *pos* and *whence*. Note that *pos* is a signed quantity, meaning that it is possible to move forward or backward the seek position.
+It is not meaningful to seek on certain objects, such as the console device that will eventually fail.
+Although, positions less than zero are invalid, positions beyond EOF are legal.
+Note that each distinct open of a file should have an independent seek pointer.
 
-* int fd
-* off_t pos
-* int whence
-* off_t *returnVal
+* **int fd**
+* **off_t pos**
+* **int whence**
+  - *SEEK_SET*: the new position is *pos*
+  - *SEEK_CUR*: the new position is the current position plus *pos*
+  - *SEEK_END*: the new position is the position of end-of-file plus *pos*
+  - *others*: lseek fails
+* **off_t \*returnVal**
 
-### *sys_dup2*
+The first step in the implementation is the validation of the file descriptor.
+The *fd* must be within the valid range, it cannot be negative or exceed the system limit *OPEN_MAX*.
+If this condition fails, the function returns *EBADF*, indicating an invalid file descriptor, the same error is also returned if the *fd* does not correspond to an open file in the current process’s *fileTable*.
+Once the *fd* has been validated, the corresponding openfile structure is retrieved from the process’s file table.
+This structure contains the file’s current offset, access mode, and vnode pointer, which are necessary for determining and updating the new offset.
+The *whence* parameter specifies how the new file position should be calculated, *SEEK_SET*, *SEEK_CUR*, or *SEEK_END*.
+If *whence* does not correspond to any of these valid constants, the function returns *EINVAL*, indicating an invalid argument.
+After computing the new offset, an additional check ensures that the resulting value is not negative.
+If *newOff* is less than zero, *EINVAL* is returned again, since negative offsets are not valid for seekable files.
+If all validations pass, the file’s offset is updated to the newly calculated position.
+The new offset is also stored in *returnVal*, allowing the user process to know the updated file position.
+Finally, the function returns 0 to indicate success.
 
-* int olfFd
-* int newFd
-* int *returnVal
+### ***sys_dup2***
+Clones the file handle *oldFd* ont the file handle *newFd*. If *newFd* names an open file, that file is closed.
+The two handles refer to the same "open" of the file, meaning that they are references to the same object and share the same *seek* pointer. But is not the same thing of opening the same file twice.
+*dup2* is most commonly used to relocate opened files onto *STDIN_FILENO*, *STDOUT_FILENO*, and/or *STDERR_FILENO*.
 
-### *sys_chdir*
+* **int olfFd**
+* **int newFd**
+* **int \*returnVal**
 
-* userptr_t pathName
+The first step in the implementation is the validation of both file descriptors *oldFd* and *newFd*.
+The *oldFd* and *newFd* must be within the valid range, they cannot be negative or exceed the system limit *OPEN_MAX*.
+If this condition fails, the function returns *EBADF*, indicating an invalid file descriptor.
+Once both file descriptors have been validated, a check is performed to determine if *oldFd* and *newFd* are the same.
+According to the POSIX specification, if they are equal, the function does not perform any duplication and simply returns *newFd* as the result, since both descriptors already refer to the same open file.
+After this check, the process’s file table lock is acquired to ensure mutual exclusion while accessing or modifying shared data.
+The function retrieves the *oldfile* entry from the current process’s *fileTable*.
+If *oldFd* does not correspond to an open file, the entry is *NULL*, the lock is released and the function returns *EBADF*.
+If *newFd* already refers to an open file, it must be closed first to comply with the *dup2* behavior.
+This is done by calling *file_decref(newfile)*, which decrements the reference count of the file associated with *newFd*.
+If the count reaches zero, the file is closed and its resources are released.
+The entry in the *fileTable* for *newFd* is then cleared.
+Next, the reference count of the *oldfile* is incremented using *file_incref(oldfile)* to account for the new reference created by *newFd*.
+The *fileTable* entry for *newFd* is updated to point to the same struct file as *oldFd*, meaning both descriptors now share the same file offset, access mode, and underlying file object.
+Finally, the new descriptor value is stored in *returnVal* as *newFd*, the process lock is released, and the function returns 0 to indicate success.
 
-### *sys_getcwd*
+### ***sys_chdir***
+The current directory of the current process is set to the directory named by *pathName*.
 
-* userptr_t buffer
-* size_t bufLen
-* int *returnVal
+* **userptr_t pathName**
+
+The first step in the implementation is the validation of the *pathName* parameter.
+If pathName is *NULL*, the function immediately returns *EFAULT*, indicating that the user has provided an invalid memory address.
+This check ensures that the kernel does not attempt to access memory that belongs to user space without proper validation.
+Next, a buffer is allocated in kernel space to hold the path string passed from user space.
+The allocation uses *kmalloc* and reserves enough space to accommodate the maximum possible path length *PATH_MAX*.
+If the memory allocation fails, the function returns *ENOMEM* to indicate that there is not enough memory available in the kernel.
+Once the buffer is successfully allocated, the user-provided path is copied safely from user space into the kernel buffer using *copyinstr*.
+This function also ensures that the string is null-terminated and within the specified maximum length.
+If *copyinstr* fails, for example, if the user address is invalid, the kernel buffer is freed and the corresponding error code is returned.
+After the path has been copied, the function attempts to locate the *vnode* corresponding to the provided directory path using *vfs_lookup*.
+If this lookup fails—meaning the directory does not exist or cannot be accessed—the function frees the kernel buffer and returns the appropriate error code from *vfs_lookup*.
+Once the *vnode* is successfully retrieved, the buffer is freed since it is no longer needed.
+Before changing the current working directory, the function verifies that the *vnode* actually represents a directory and not a regular file or another object type.
+This is done by calling *VOP_STAT* to retrieve information about the *vnode* and checking whether the file’s mode includes the *S_IFDIR* flag.
+If *VOP_STAT* fails, the *vnode* is closed and the error is returned.
+If the *vnode* is not a directory, the function also closes it and returns *ENOTDIR*, signaling that the provided path is not a valid directory.
+If all checks pass, the function proceeds to update the current process’s working directory.
+The old working directory *vnode* (*curproc->p_cwd*) is closed using *vfs_close*, and the new vnode retrieved from *vfs_lookup* is assigned as the process’s current working directory.
+Finally, the function returns 0 to indicate success.
+
+### ***sys_getcwd***
+The name of the current directory is computed and stored in *buffer*, an area of size *bufLen*. The length of data actually stored, which must be non-negative, is returned.
+
+* **userptr_t buffer**
+* **size_t bufLen**
+* **int \*returnVal**
+
+The first step in the implementation is the validation of the *buffer* parameter.
+If *buffer* is *NULL*, the function immediately returns *EFAULT*, indicating that the provided user-space pointer is invalid.
+This ensures that the kernel does not attempt to write data to an invalid or restricted memory address in user space.
+After validating the parameters, a kernel-side uio structure is initialized to manage the transfer of data from the kernel to user space.
+This structure is set up with the user-provided buffer, its length *bufLen*, and a direction flag indicating a read from the kernel’s perspective *UIO_READ*.
+The initialization is done using *uio_uinit*, which prepares the *iovec* and *uio* structures to handle the *copyout* process safely.
+Once the *uio* is ready, the function calls *vfs_getcwd*, which queries the virtual file system layer to obtain the absolute path of the current working directory for the calling process.
+The resulting path is written directly into the user buffer through the *uio* structure.
+If *vfs_getcwd* fails, it returns an appropriate error code depending on the situation:
+*ENOENT* if the current working directory no longer exists, for example, it was deleted;
+*EIO* in case of a low-level disk I/O error;
+*EFAULT* if the provided user buffer could not be written to due to invalid memory access.
+The function simply returns this error code to the caller without further processing.
+If the call succeeds, the function calculates how many bytes were actually written to the user buffer.
+This is done by subtracting the remaining bytes in *ku.uio_resid* from the total buffer length *bufLen*.
+The resulting value is stored in *returnVal*, which represents the number of bytes successfully copied.
+Finally, the function returns 0 to indicate that the operation completed successfully and the current working directory path has been correctly retrieved.
