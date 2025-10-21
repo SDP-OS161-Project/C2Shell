@@ -13,6 +13,7 @@
 #include <uio.h>
 
 #define SYSTEM_OPEN_MAX (10*OPEN_MAX)
+#define CHUNK_SIZE 4096
 
 struct openfile systemFileTable[SYSTEM_OPEN_MAX]
 
@@ -59,6 +60,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
         {
             openF = &systemFileTable[i].vn;
             openF->vn = vn;
+            openF->openFlags = openFlags;
             break;
         }
     }
@@ -193,7 +195,7 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     }
     curproc->fileTable[fd] = NULL;
 
-    vn = f->vn;
+    vn = fl->vn;
     if(vn == NULL)
     {
         return EBADF; 
@@ -219,50 +221,110 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     return 0;
 }
 
+// TODO: check whether it would be better to check the bufLen in order to create a kernel buffer
+// PageSize = 4096 bytes, so if bufLen is too large it may cause memory issues
+// it would be better to cycle and write in chunks of CHUNK_SIZE
 int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 {
     struct openfile *fl;
-    struct vnode *vn;
     struct iovec iov;
     struct uio ku;
     int res;
-    size_t nWrite;
-    char *kBuffer = kmalloc(bufLen);
-    if(kBuffer == NULL)
-    {
+    size_t nWrite = 0;
+    char *kBuffer = NULL;
+
+    // Validate arguments
+    if (buffer == NULL) {
+        return EFAULT;
+    }
+    if (bufLen > SSIZE_MAX) {
+        return EINVAL;
+    }
+    if (bufLen == 0) {
+        *returnVal = 0;
+        return 0;
+    }
+
+    // Allocate a fixed-size kernel buffer
+    kBuffer = kmalloc(CHUNK_SIZE);
+    if (kBuffer == NULL) {
         return ENOMEM;
     }
 
-    if(fd < 0 || fd > OPEN_MAX)
-    {
-        return EBADF; //invalid id for file
+    if (fd < 0 || fd >= OPEN_MAX) {
+        kfree(kBuffer);
+        return EBADF;
     }
 
     fl = curproc->fileTable[fd];
-    if(fl == NULL)
-    {
-        return EBADF; //there isnt an open file with this fd
-    }
-
-    res = copyin(buffer, kBuffer, bufLen);
-    if(res)
-    {
+    if (fl == NULL) {
         kfree(kBuffer);
-        return res;
+        return EBADF;
     }
 
-    uio_kinit(&iov, &ku, kBuffer, bufLen, fl->offset, UIO_WRITE);
-
-    res = VOP_WRITE(f->vn, &ku);
-    if(res)
-    {
-        return res;
+    // Check that file is opened for writing
+    // TODO: add handling for different modes for example O_APPEND
+    if (fl->openFlags == O_RDONLY) {
+        kfree(kBuffer);
+        return EBADF;
+    }
+    
+    if (fl->openFlags & O_APPEND) {
+        struct stat st;
+        lock_acquire(fl->lockFile);
+        res = VOP_STAT(fl->vn, &st);
+        if (res) {
+            kfree(kBuffer);
+            lock_release(fl->lockFile);
+            return res;
+        }
+        fl->offset = st.st_size;
+        lock_release(fl->lockFile);
     }
 
-    nWrite = bufLen - ku.uio_resid;
-    fl->offset += nWrite;
-    *returnVal = nWrtie;
-    return 0; 
+    while (nWrite < bufLen) {
+        size_t remaining = bufLen - nWrite;
+        size_t nLen = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
+
+        // copyin from user buffer at offset nWrite
+        res = copyin((const_userptr_t)((uintptr_t)buffer + nWrite), kBuffer, nLen);
+        if (res) {
+            kfree(kBuffer);
+            return res;
+        }
+
+        // Acquire file lock for the duration of the write/update of offset
+        lock_acquire(fl->lockFile);
+
+        uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_WRITE);
+
+        res = VOP_WRITE(fl->vn, &ku);
+        if (res) {
+            lock_release(fl->lockFile);
+            kfree(kBuffer);
+            return res;
+        }
+
+        // Count actual bytes written in this chunk
+        size_t wrote = nLen - ku.uio_resid;
+        nWrite += wrote;
+        fl->offset += wrote;
+
+        lock_release(fl->lockFile);  
+
+        // If the VOP wrote less than requested, return no space error
+        // I got this from the documentation of OS161
+        if (wrote < nLen and wrote > 0) {
+            kfree(kBuffer);
+            *returnVal = (ssize_t)nWrite;  
+            return ENOSPC; // No space left on device (Less POSIX compliant)
+        }
+
+    }
+
+    kfree(kBuffer);
+    *returnVal = (ssize_t)nWrite;
+    return 0;
 }
 
 int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
@@ -339,7 +401,7 @@ int sys_dup2(int oldFd, int newFd, int *returnVal)
     /* If oldFd == newFd, do nothing per POSIX */
     if (oldFd == newFd)
     {
-        *retval = newFd;
+        *returnVal = newFd;
         lock_release(p->ft_lock);
         return 0;
     }
@@ -369,7 +431,7 @@ int sys_dup2(int oldFd, int newFd, int *returnVal)
     file_incref(oldfile);
     p->filetable[newFd] = oldfile;
 
-    *retval = newFd;
+    *returnVal = newFd;
     lock_release(p->ft_lock);
     return 0;
 }

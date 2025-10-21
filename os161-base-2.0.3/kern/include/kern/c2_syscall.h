@@ -10,7 +10,8 @@ struct openfile {
     struct vnode *vn;
     off_t offset;
     unsigned int countRef;
-    int modeFile;
+    mode_t modeFile;
+    int openFlags;
     struct lock *lockFile;
 }
 
