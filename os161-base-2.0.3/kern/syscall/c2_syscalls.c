@@ -180,7 +180,7 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     struct uio ku;
     int res;
 
-    char kBuffer[128];
+    char *kBuffer = NULL;
     size_t nRead;
 
     if(fd < 0 || fd > OPEN_MAX)
@@ -201,19 +201,69 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         return EBADF; 
     }
 
-    uio_kinit(&iov, &ku, kBuffer, bufLen, fl->offset, UIO_READ);
-
-    res = VOP_READ(fl->vn, &ku);
-    if(res)
-    {   // VOP_READ may return errors so we need this check in case 
-        return res;
+    if (buffer == NULL) 
+    {
+        return EFAULT;
     }
 
-    nRead = bufLen - ku.uio_resid;
-    res = copyout(kBuffer, buffer, nRead);
-    if(res)
-    {   //check for user space memory errors while copying the data inside buffer
-        return res;
+    if (bufLen > SSIZE_MAX)
+    {
+        return EINVAL;
+    }
+
+    if (bufLen == 0) 
+    {
+        *returnVal = 0;
+        return 0;
+    }
+
+    kBuffer = kmalloc(CHUNK_SIZE);
+    if (kBuffer == NULL)
+    {
+        return ENOMEM;
+    }
+
+    while (nRead < bufLen) 
+    {
+        size_t remaining = bufLen - nRead;
+        size_t nLen = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
+
+        lock_acquire(fl->lockFile);
+
+        uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_READ);
+
+        res = VOP_READ(vn, &ku);
+        if (res) 
+        {
+            kfree(kBuffer);
+            lock_release(fl->lockFile);
+            return res;
+        }
+
+        size_t readThisChunk = nLen - ku.uio_resid;
+        fl->offset += readThisChunk;
+        lock_release(fl->lockFile);
+
+        if (readThisChunk == 0) 
+        {
+            break;
+        }
+
+        // copyout to user buffer at offset nRead
+        res = copyout(kBuffer, (userptr_t)((uintptr_t)buffer + nRead), readThisChunk);
+        if (res) 
+        {
+            kfree(kBuffer);
+            return res;
+        }
+
+        nRead += readThisChunk;
+
+        // If the VOP read less or none break
+        if (readThisChunk < nLen || readThisChunk == 0) 
+        {
+            break;
+        }
     }
 
     fl->offset += nRead;
@@ -234,62 +284,59 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     char *kBuffer = NULL;
 
     // Validate arguments
-    if (buffer == NULL) {
+    if (buffer == NULL) 
+    {
         return EFAULT;
     }
-    if (bufLen > SSIZE_MAX) {
+    if (bufLen > SSIZE_MAX) 
+    {
         return EINVAL;
     }
-    if (bufLen == 0) {
+    if (bufLen == 0) 
+    {
         *returnVal = 0;
         return 0;
     }
 
     // Allocate a fixed-size kernel buffer
     kBuffer = kmalloc(CHUNK_SIZE);
-    if (kBuffer == NULL) {
+    if (kBuffer == NULL) 
+    {
         return ENOMEM;
     }
 
-    if (fd < 0 || fd >= OPEN_MAX) {
+    if (fd < 0 || fd >= OPEN_MAX) 
+    {
         kfree(kBuffer);
         return EBADF;
     }
 
     fl = curproc->fileTable[fd];
-    if (fl == NULL) {
+    if (fl == NULL) 
+    {
         kfree(kBuffer);
         return EBADF;
     }
 
     // Check that file is opened for writing
     // TODO: add handling for different modes for example O_APPEND
-    if (fl->openFlags == O_RDONLY) {
+    if (fl->openFlags == O_RDONLY) 
+    {
         kfree(kBuffer);
         return EBADF;
     }
-    
-    if (fl->openFlags & O_APPEND) {
-        struct stat st;
-        lock_acquire(fl->lockFile);
-        res = VOP_STAT(fl->vn, &st);
-        if (res) {
-            kfree(kBuffer);
-            lock_release(fl->lockFile);
-            return res;
-        }
-        fl->offset = st.st_size;
-        lock_release(fl->lockFile);
-    }
 
-    while (nWrite < bufLen) {
+    while (nWrite < bufLen) 
+    {
         size_t remaining = bufLen - nWrite;
         size_t nLen = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
 
         // copyin from user buffer at offset nWrite
         res = copyin((const_userptr_t)((uintptr_t)buffer + nWrite), kBuffer, nLen);
-        if (res) {
+        if (res) 
+        {
             kfree(kBuffer);
+            lock_release(fl->lockFile);
             return res;
         }
 
@@ -298,9 +345,21 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 
         uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_WRITE);
 
+        if (fl->openFlags & O_APPEND) 
+        {
+            struct stat st;
+            res = VOP_STAT(fl->vn, &st);
+            if (res) {
+                kfree(kBuffer);
+                lock_release(fl->lockFile);
+                return res;
+            }
+            fl->offset = st.st_size;
+        }
+
         res = VOP_WRITE(fl->vn, &ku);
-        if (res) {
-            lock_release(fl->lockFile);
+        if (res) 
+        {
             kfree(kBuffer);
             return res;
         }
@@ -312,14 +371,11 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 
         lock_release(fl->lockFile);  
 
-        // If the VOP wrote less than requested, return no space error
-        // I got this from the documentation of OS161
-        if (wrote < nLen and wrote > 0) {
-            kfree(kBuffer);
-            *returnVal = (ssize_t)nWrite;  
-            return ENOSPC; // No space left on device (Less POSIX compliant)
+        // If the VOP wrote less or none break
+        if (wrote < nLen || wrote == 0) 
+        {
+            break;
         }
-
     }
 
     kfree(kBuffer);
@@ -343,6 +399,11 @@ int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
     if(fl == NULL)
     {
         return EBADF; //there isnt an open file with this fd
+    }
+
+    if (!VOP_ISSEEKABLE(fl->vn))
+    {
+        return ESPIPE;
     }
 
     switch(whence)
@@ -373,10 +434,14 @@ int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
         return EINVAL;
     }
 
+    lock_acquire(fl->lockFile);
     fl->offset = newOff;
+    lock_release(fl->lockFile);
+    
     *returnVal = newOff;
     return 0;
 }
+
 /*
 Error codes:
 EBADF: The file descriptor is not valid or is not open.
@@ -390,6 +455,7 @@ int sys_dup2(int oldFd, int newFd, int *returnVal)
     struct file *oldfile;
     struct file *newfile;
     struct proc *p = curproc;
+    struct openfile *toClose = NULL;
 
     /* Validate file descriptor range */
     if (oldFd < 0 || oldFd >= OPEN_MAX || 
@@ -402,7 +468,6 @@ int sys_dup2(int oldFd, int newFd, int *returnVal)
     if (oldFd == newFd)
     {
         *returnVal = newFd;
-        lock_release(p->ft_lock);
         return 0;
     }
 
@@ -418,12 +483,12 @@ int sys_dup2(int oldFd, int newFd, int *returnVal)
         return EBADF;
     }
 
-    /* If newFd already open, close it first */
+    /* If newFd already open, prepare to close it first */
     newfile = p->filetable[newFd];
     if (newfile != NULL)
     {
         /* Drop the old reference */
-        file_decref(newfile);
+        toClose = newfile;
         p->filetable[newFd] = NULL;
     }
 
@@ -431,8 +496,15 @@ int sys_dup2(int oldFd, int newFd, int *returnVal)
     file_incref(oldfile);
     p->filetable[newFd] = oldfile;
 
-    *returnVal = newFd;
     lock_release(p->ft_lock);
+
+    if (toClose != NULL)
+    {
+        /* Close the old file outside the lock */
+        file_decref(toClose);
+    }
+
+    *returnVal = newFd;
     return 0;
 }
 
@@ -471,12 +543,11 @@ int sys_chdir(userptr_t pathName)
     }
 
     err = vfs_lookup(kernB, &vn);
+    kfree(kernB);
     if (err)
     {
-        kfree(kernB);
         return err;
     }
-    kfree(kernB);
 
     //check if it is a directory
     struct stat fileStat;
@@ -487,7 +558,7 @@ int sys_chdir(userptr_t pathName)
         return err;
     }
     
-    if (fileStat.st_mode & S_IFDIR == 0)
+    if ((fileStat.st_mode & S_IFDIR) == 0)
     {
         vfs_close(vn);
         return ENOTDIR;
