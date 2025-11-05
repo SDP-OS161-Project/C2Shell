@@ -17,7 +17,7 @@
 #define SYSTEM_OPEN_MAX (10*OPEN_MAX)
 #define CHUNK_SIZE 4096
 
-struct openfile systemFileTable[SYSTEM_OPEN_MAX]
+struct openfile systemFileTable[SYSTEM_OPEN_MAX];
 
 #if OPT_C2OS
 

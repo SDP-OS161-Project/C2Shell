@@ -13,7 +13,7 @@ struct openfile {
     mode_t modeFile;
     int openFlags;
     struct lock *lockFile;
-}
+};
 
 #if OPT_C2OS
 
