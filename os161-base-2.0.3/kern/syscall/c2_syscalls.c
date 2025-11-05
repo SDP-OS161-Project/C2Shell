@@ -13,6 +13,10 @@
 #include <uio.h>
 #include <kern/c2_syscall.h>
 #include <kern/stat.h>
+#include <kern/fcntl.h>
+#include <kern/seek.h>
+#include <synch.h>
+#include <stat.h>
 
 #define SYSTEM_OPEN_MAX (10*OPEN_MAX)
 #define CHUNK_SIZE 4096
@@ -61,7 +65,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     {
         if (systemFileTable[i].vn == NULL)
         {
-            openF->vn = &systemFileTable[i].vn;
+            openF = &systemFileTable[i];
             openF->vn = vn;
             openF->openFlags = openFlags;
             break;
@@ -99,7 +103,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
                     curproc->fileTable[i]->offset = 0;
                 }
                 //TODO: find out if an atomic action should take place instead of this one
-                curproc->fileTable[i]->countRefs = 1;
+                curproc->fileTable[i]->countRef = 1;
 
                 switch (openFlags & O_ACCMODE)
                 {
@@ -114,7 +118,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
                         break;
                     default:
                         vfs_close(curproc->fileTable[i]->vn);
-                        kfree(curproc->fileTablep[i]);
+                        kfree(curproc->fileTable[i]);
                         curproc->fileTable[i] = NULL;
                         return EINVAL;
                 }
@@ -123,7 +127,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
                 if (curproc->fileTable[i]->lockFile == NULL)
                 {
                     vfs_close(curproc->fileTable[i]->vn);
-                        kfree(curproc->fileTablep[i]);
+                        kfree(curproc->fileTable[i]);
                         curproc->fileTable[i] = NULL;
                         return ENOMEM;
                 }
@@ -184,7 +188,7 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     int res;
 
     char *kBuffer = NULL;
-    size_t nRead;
+    size_t nRead = 0;
 
     if(fd < 0 || fd > OPEN_MAX)
     {
@@ -209,10 +213,10 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         return EFAULT;
     }
 
-    if (bufLen > SSIZE_MAX)
-    {
-        return EINVAL;
-    }
+    // if (bufLen > SSIZE_MAX)
+    // {
+    //     return EINVAL;
+    // }
 
     if (bufLen == 0) 
     {
@@ -291,10 +295,10 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     {
         return EFAULT;
     }
-    if (bufLen > SSIZE_MAX) 
-    {
-        return EINVAL;
-    }
+    // if (bufLen > SSIZE_MAX) 
+    // {
+    //     return EINVAL;
+    // }
     if (bufLen == 0) 
     {
         *returnVal = 0;
@@ -455,8 +459,8 @@ ENFILE: The system-wide limit on the total number of open files has
 */
 int sys_dup2(int oldFd, int newFd, int *returnVal)
 {
-    struct file *oldfile;
-    struct file *newfile;
+    struct openfile *oldfile;
+    struct openfile *newfile;
     struct proc *p = curproc;
     struct openfile *toClose = NULL;
 
@@ -478,33 +482,34 @@ int sys_dup2(int oldFd, int newFd, int *returnVal)
     /* TODO: Add check for global file count to be less or equal
          than system max open files (SYSTEM_OPEN_MAX)
     */
-    lock_acquire(p->ft_lock);
-    oldfile = p->filetable[oldFd];
+    lock_acquire(p->fileTable[oldFd]->lockFile);
+    oldfile = p->fileTable[oldFd];
     if (oldfile == NULL)
     {
-        lock_release(p->ft_lock);
+        lock_release(p->fileTable[oldFd]->lockFile);
         return EBADF;
     }
 
     /* If newFd already open, prepare to close it first */
-    newfile = p->filetable[newFd];
+    newfile = p->fileTable[newFd];
     if (newfile != NULL)
     {
         /* Drop the old reference */
         toClose = newfile;
-        p->filetable[newFd] = NULL;
+        p->fileTable[newFd] = NULL;
     }
 
     /* Increment reference count on the existing file */
-    file_incref(oldfile);
-    p->filetable[newFd] = oldfile;
+    oldfile->countRef++;
+    p->fileTable[newFd] = oldfile;
 
-    lock_release(p->ft_lock);
+    lock_release(p->fileTable[oldFd]->lockFile);
 
     if (toClose != NULL)
     {
         /* Close the old file outside the lock */
-        file_decref(toClose);
+        oldfile->countRef--;
+        //TODO: check coutRef = 0
     }
 
     *returnVal = newFd;
@@ -585,14 +590,30 @@ int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal)
     int result;
     struct iovec iov;
     struct uio ku;
+    char *kBuffer = NULL;
+    int res;
 
     /* Validate arguments */
     if (buffer == NULL) {
         return EFAULT;
     }
 
+    kBuffer = kmalloc(CHUNK_SIZE);
+    if (kBuffer == NULL) 
+    {
+        return ENOMEM;
+    }
+
+    res = copyin((const_userptr_t)((uintptr_t)buffer), kBuffer, bufLen);
+
+        if (res) 
+        {
+            kfree(kBuffer);
+            return res;
+        }
+
     /* Initialize kernel-side UIO for writing the path into user buffer */
-    uio_uinit(&iov, &ku, buffer, bufLen, 0, UIO_READ);
+    uio_kinit(&iov, &ku, kBuffer, bufLen, 0, UIO_READ);
 
     /* Ask the VFS for the current working directory */
     result = vfs_getcwd(&ku);

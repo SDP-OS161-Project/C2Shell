@@ -38,6 +38,11 @@
 
 #include <spinlock.h>
 
+
+#include <kern/c2_syscall.h>
+#include <limits.h>
+
+
 struct addrspace;
 struct thread;
 struct vnode;
