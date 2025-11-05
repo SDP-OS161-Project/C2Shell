@@ -57,7 +57,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     kfree(kernB);
 
     int nElements = sizeof(systemFileTable) / sizeof(systemFileTable);
-    for (int i = 0; i < ; i++)
+    for (int i = 0; i < nElements; i++)
     {
         if (systemFileTable[i].vn == NULL)
         {
