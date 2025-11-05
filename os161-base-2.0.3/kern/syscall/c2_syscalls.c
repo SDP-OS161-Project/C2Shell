@@ -11,6 +11,7 @@
 #include <vfs.h>
 #include <limits.h>
 #include <uio.h>
+#include "c2_syscall.h"
 
 #define SYSTEM_OPEN_MAX (10*OPEN_MAX)
 #define CHUNK_SIZE 4096
@@ -58,7 +59,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     {
         if (systemFileTable[i].vn == NULL)
         {
-            openF = &systemFileTable[i].vn;
+            openF->vn = &systemFileTable[i].vn;
             openF->vn = vn;
             openF->openFlags = openFlags;
             break;
