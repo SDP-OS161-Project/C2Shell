@@ -11,7 +11,8 @@
 #include <vfs.h>
 #include <limits.h>
 #include <uio.h>
-#include "c2_syscall.h"
+#include <kern/c2_syscall.h>
+#include <kern/stat.h>
 
 #define SYSTEM_OPEN_MAX (10*OPEN_MAX)
 #define CHUNK_SIZE 4096
