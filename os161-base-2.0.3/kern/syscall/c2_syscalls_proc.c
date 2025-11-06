@@ -12,6 +12,9 @@
 #include <kern/fcntl.h>
 #include <vnode.h>
 #include <kern/unistd.h>
+#include <syscall.h>
+#include <current.h>
+#include <copyinout.h>
 
 int sys_getpid(pid_t *retvalpid) {
 
@@ -174,4 +177,77 @@ int sys_fork(struct trapframe *ctf, pid_t *retval) {
 
     *retval = child->p_pid;      // return pid of child
     return 0;
+}
+
+int sys_execv(const char *progname, char *argv[]) {
+
+	KASSERT(curproc != NULL);
+
+    if(progname == NULL || argv == NULL){
+        return EFAULT;
+    }
+
+    userptr_t prog = (userptr_t) progname;
+    userptr_t uargv = (userptr_t) argv;
+	
+	vaddr_t entrypoint, stackptr;
+	int argc, err;
+
+	//copy program name to kernal space
+	char *kpath = kmalloc(PATH_MAX);
+	if (kpath == NULL) {
+		return ENOMEM;
+	}
+
+	err = copyinstr(prog, kpath, PATH_MAX, NULL);
+	if (err) {
+		kfree(kpath);
+		return err;
+	}
+
+	if(kpath[0] == '\0'){ //empty path not allowed
+        kfree(kpath);
+        return EINVAL;
+    }
+
+    //copy arguments from user space
+	argbuf_t kargv; 
+	argbuf_init(&kargv);
+
+	err = argbuf_fromuser(&kargv, uargv);
+	if (err) {
+		argbuf_cleanup(&kargv);
+		kfree(kpath);
+		return err;
+	}
+
+	/**
+	 * LOAD THE EXECUTABLE
+	 * NB: must not fail from here on, the old address space has been destroyed
+	 * 	   and, therefore, there is nothing to restore in case of failure.
+	 */
+	err = loadexec(kpath, &entrypoint, &stackptr);
+	if (err) {
+		argbuf_cleanup(&kargv);
+		kfree(kpath);
+		return err;
+	}
+
+	kfree(kpath); //no longer needed
+
+	//copy arguments back to user stack
+	err = argbuf_copyout(&kargv, &stackptr, &argc, &uargv);
+	if (err) {
+		//at this stage failure is unrecoverable 
+		panic("execv: copyout_args failed: %s\n", strerror(err));
+	}
+
+	argbuf_cleanup(&kargv);
+
+	//enter the new process
+	enter_new_process(argc, uargv, NULL /*envp*/, stackptr, entrypoint);
+
+	//should never return
+	panic("enter_new_process returned\n");
+	return EINVAL;
 }

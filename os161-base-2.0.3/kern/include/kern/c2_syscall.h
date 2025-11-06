@@ -41,6 +41,8 @@ void sys_exit(int exitcode);
 
 int sys_fork(struct trapframe *ctf, pid_t *retval);
 
+int sys_execv(const char *progname, char *argv[]);
+
 #endif
 
 #endif
