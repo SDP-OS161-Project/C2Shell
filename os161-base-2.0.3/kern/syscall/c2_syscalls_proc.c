@@ -83,3 +83,20 @@ int sys_waitpid(pid_t pid, int *status, int options, int32_t *retvalpid) {
 
     return 0;
 }
+
+void sys_exit(int exitcode) {
+
+    KASSERT(curproc != NULL);
+    KASSERT(curthread != NULL);
+
+    curproc->p_status = _MKWAIT_EXIT(exitcode);    // exitcode & 0xff
+
+    proc_remthread(curthread);     
+
+    lock_acquire(curproc->p_locklock);
+    cv_signal(curproc->p_cv, curproc->p_locklock);
+    lock_release(curproc->p_locklock);
+
+    thread_exit();   //exit thread
+
+}

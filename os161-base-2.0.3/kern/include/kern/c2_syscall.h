@@ -37,6 +37,8 @@ int sys_getpid(pid_t *retvalpid);
 
 int sys_waitpid(pid_t pid, int *status, int options, int32_t *retvalpid);
 
+void sys_exit(int exitcode);
+
 #endif
 
 #endif
