@@ -118,10 +118,17 @@ struct addrspace *proc_setas(struct addrspace *);
 
 #if OPT_C2OS
 int is_child(struct proc* proc, pid_t child_pid);
-#endif
 
-#if OPT_C2OS
 struct proc *proc_search(pid_t pid);
+
+int find_valid_pid(void);
+
+int proc_add(pid_t pid, struct proc *proc);
+
+void proc_remove(pid_t pid);
+
+void call_enter_forked_process(void *tfv, unsigned long dummy);
+
 #endif
 
 

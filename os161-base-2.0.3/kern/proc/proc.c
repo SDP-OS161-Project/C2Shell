@@ -48,6 +48,7 @@
 #include <current.h>
 #include <addrspace.h>
 #include <vnode.h>
+#include <syscall.h>
 
 /*
  * The process for the kernel; this holds all the kernel-only threads.
@@ -348,18 +349,74 @@ int is_child(struct proc* proc, pid_t child_pid){
 #if OPT_C2OS
 struct proc *proc_search(pid_t pid) {
 
-	/* CHECKING PID CONSTRAINTS */
 	if (pid <= 0 || pid > PROC_MAX) {
 		return NULL;
 	}
 
-	/* RETRIEVING PROCESS BASED ON THE INDEX PID */
 	struct proc *proc = processTable.proc[pid];
 	if (proc->p_pid != pid) {
 		return NULL;
 	}
 
-	/* TASK COMPLETED SUCCESSFULLY */
 	return proc;
+}
+#endif
+
+#if OPT_C2OS
+int find_valid_pid(void) {
+	
+	int index = (processTable.last_pid + 1 > PROC_MAX) ? 1 : processTable.last_pid + 1;
+	while (index != processTable.last_pid) {
+        if (processTable.proc[index] == NULL) {
+            break;
+        }
+
+        index ++;
+        index = (index > PROC_MAX) ? 1 : index;
+    }
+
+	if (index == processTable.last_pid) {
+        return -1; 
+    }
+
+	return index;
+}
+#endif
+
+#if OPT_C2OS
+int proc_add(pid_t pid, struct proc *proc) {
+
+	if (pid <= 0 || pid > PROC_MAX+1 || proc == NULL) {
+		return -1;
+	}
+
+	spinlock_acquire(&processTable.lk);
+	processTable.proc[pid] = proc;
+
+	processTable.last_pid = pid;
+	spinlock_release(&processTable.lk);
+
+	return 0;
+}
+#endif
+
+#if OPT_C2OS
+void proc_remove(pid_t pid) {
+
+	spinlock_acquire(&processTable.lk);
+	processTable.proc[pid] = NULL;
+	spinlock_release(&processTable.lk);
+
+}
+#endif
+
+#if OPT_C2OS
+void call_enter_forked_process(void *tfv, unsigned long dummy) {
+
+	(void) dummy;
+
+	struct trapframe *tf = (struct trapframe *) tfv;
+	enter_forked_process(tf); 
+
 }
 #endif

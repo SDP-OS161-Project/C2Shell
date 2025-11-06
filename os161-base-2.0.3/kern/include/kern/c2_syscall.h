@@ -39,6 +39,8 @@ int sys_waitpid(pid_t pid, int *status, int options, int32_t *retvalpid);
 
 void sys_exit(int exitcode);
 
+int sys_fork(struct trapframe *ctf, pid_t *retval);
+
 #endif
 
 #endif
