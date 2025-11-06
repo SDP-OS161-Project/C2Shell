@@ -54,6 +54,16 @@
  */
 struct proc *kproc;
 
+#if OPT_C2OS
+#define PROC_MAX 100				/* maximum number of allowed running process 	*/
+static struct _processTable {
+	bool is_active;					/* table is active and ready to use 			*/
+	struct proc *proc[PROC_MAX+1];	/* [0] not used, PID >= 1 						*/
+	pid_t last_pid;					/* last PID used in the table 					*/
+	struct spinlock lk;				/* lock for this table 							*/
+} processTable;
+#endif
+
 /*
  * Create a proc structure.
  */
@@ -318,3 +328,38 @@ proc_setas(struct addrspace *newas)
 	spinlock_release(&proc->p_lock);
 	return oldas;
 }
+
+#if OPT_C2OS
+int is_child(struct proc* proc, pid_t child_pid){
+	struct child_list* app=proc->children_list;
+
+
+	while(app!=NULL){
+		if(app->child_pid==child_pid){
+			return 0;
+		}
+		app=app->next_child;
+	}
+	
+	return -1;
+}
+#endif
+
+#if OPT_C2OS
+struct proc *proc_search(pid_t pid) {
+
+	/* CHECKING PID CONSTRAINTS */
+	if (pid <= 0 || pid > PROC_MAX) {
+		return NULL;
+	}
+
+	/* RETRIEVING PROCESS BASED ON THE INDEX PID */
+	struct proc *proc = processTable.proc[pid];
+	if (proc->p_pid != pid) {
+		return NULL;
+	}
+
+	/* TASK COMPLETED SUCCESSFULLY */
+	return proc;
+}
+#endif

@@ -33,6 +33,10 @@ int sys_chdir(userptr_t pathName);
 
 int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal);
 
+int sys_getpid(pid_t *retvalpid);
+
+int sys_waitpid(pid_t pid, int *status, int options, int32_t *retvalpid);
+
 #endif
 
 #endif

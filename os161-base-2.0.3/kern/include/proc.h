@@ -37,8 +37,6 @@
  */
 
 #include <spinlock.h>
-
-
 #include <kern/c2_syscall.h>
 #include <limits.h>
 
@@ -46,6 +44,13 @@
 struct addrspace;
 struct thread;
 struct vnode;
+
+#if OPT_C2OS
+struct child_list {
+	pid_t child_pid;
+	struct child_list* next_child;
+  };
+#endif
 
 /*
  * Process structure.
@@ -77,6 +82,12 @@ struct proc {
 
 	/* add more material here as needed */
 #if OPT_C2OS
+    int p_status;
+	pid_t p_pid;
+	pid_t parent_pid;			
+	struct child_list* children_list; 
+	struct cv *p_cv;			
+	struct lock *p_locklock;
 	struct openfile *fileTable[OPEN_MAX];
 #endif
 };
@@ -104,6 +115,14 @@ struct addrspace *proc_getas(void);
 
 /* Change the address space of the current process, and return the old one. */
 struct addrspace *proc_setas(struct addrspace *);
+
+#if OPT_C2OS
+int is_child(struct proc* proc, pid_t child_pid);
+#endif
+
+#if OPT_C2OS
+struct proc *proc_search(pid_t pid);
+#endif
 
 
 #endif /* _PROC_H_ */
