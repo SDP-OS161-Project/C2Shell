@@ -395,6 +395,7 @@ file      main/menu.c
 defoption c2os
 
 optfile c2os syscall/c2_syscalls.c
+optfile c2os syscall/c2_syscalls_proc.c
 
 ########################################
 #                                      #

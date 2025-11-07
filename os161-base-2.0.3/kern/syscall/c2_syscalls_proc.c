@@ -15,6 +15,7 @@
 #include <syscall.h>
 #include <current.h>
 #include <copyinout.h>
+#include <addrspace.h>
 
 int sys_getpid(pid_t *retvalpid) {
 
@@ -77,8 +78,8 @@ int sys_waitpid(pid_t pid, int *status, int options, int32_t *retvalpid) {
         cv_wait(child->p_cv,child->p_locklock);
     }
 
-    *status = proc->p_status;
-    *retvalpid = proc->p_pid;
+    *status = child->p_status;
+    *retvalpid = child->p_pid;
 
     lock_release(child->p_locklock);
 
@@ -109,7 +110,6 @@ int sys_fork(struct trapframe *ctf, pid_t *retval) {
     struct proc *parent = curproc;
     struct proc *child = NULL;
     struct trapframe *child_tf = NULL;
-    int err;
 
     KASSERT(curproc != NULL);
     KASSERT(ctf != NULL);
@@ -127,7 +127,7 @@ int sys_fork(struct trapframe *ctf, pid_t *retval) {
     }
 
     //copy adress space
-    err = as_copy(parent->p_addrspace, &child->p_addrspace);
+    auto err = as_copy(parent->p_addrspace, &child->p_addrspace);
     if (err) {
         proc_destroy(child);
         return err;
