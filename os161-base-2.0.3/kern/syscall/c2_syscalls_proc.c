@@ -43,6 +43,8 @@ int sys_waitpid(pid_t pid, int *status, int options, int32_t *retvalpid)
         return EFAULT;
     }
 
+    // Case where the provided pid is the pid of the process
+    // and not a pid from its childs
     if (pid == curproc->p_pid) 
     {
         return ECHILD;
@@ -66,7 +68,7 @@ int sys_waitpid(pid_t pid, int *status, int options, int32_t *retvalpid)
     }
 
     //check if the target process is a child
-    if (is_child(curproc, pid)==-1)
+    if (is_child(curproc, pid) == -1)
     {
         return ECHILD;
     }

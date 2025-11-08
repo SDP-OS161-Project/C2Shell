@@ -331,12 +331,14 @@ proc_setas(struct addrspace *newas)
 }
 
 #if OPT_C2OS
-int is_child(struct proc* proc, pid_t child_pid){
+int is_child(struct proc* proc, pid_t child_pid)
+{
 	struct child_list* app=proc->children_list;
 
-
-	while(app!=NULL){
-		if(app->child_pid==child_pid){
+	while (app!=NULL)
+	{
+		if (app->child_pid == child_pid)
+		{
 			return 0;
 		}
 		app=app->next_child;
@@ -344,30 +346,30 @@ int is_child(struct proc* proc, pid_t child_pid){
 	
 	return -1;
 }
-#endif
 
-#if OPT_C2OS
-struct proc *proc_search(pid_t pid) {
-
-	if (pid <= 0 || pid > PROC_MAX) {
+struct proc *proc_search(pid_t pid) 
+{
+	if (pid <= 0 || pid > PROC_MAX) 
+	{
 		return NULL;
 	}
 
 	struct proc *proc = processTable.proc[pid];
-	if (proc->p_pid != pid) {
+	if (proc->p_pid != pid) 
+	{
 		return NULL;
 	}
 
 	return proc;
 }
-#endif
 
-#if OPT_C2OS
-int find_valid_pid(void) {
-	
+int find_valid_pid(void) 
+{	
 	int index = (processTable.last_pid + 1 > PROC_MAX) ? 1 : processTable.last_pid + 1;
-	while (index != processTable.last_pid) {
-        if (processTable.proc[index] == NULL) {
+	while (index != processTable.last_pid) 
+	{
+        if (processTable.proc[index] == NULL) 
+		{
             break;
         }
 
@@ -375,18 +377,19 @@ int find_valid_pid(void) {
         index = (index > PROC_MAX) ? 1 : index;
     }
 
-	if (index == processTable.last_pid) {
+	if (index == processTable.last_pid) 
+	{
         return -1; 
     }
 
 	return index;
 }
-#endif
 
-#if OPT_C2OS
-int proc_add(pid_t pid, struct proc *proc) {
+int proc_add(pid_t pid, struct proc *proc) 
+{
 
-	if (pid <= 0 || pid > PROC_MAX+1 || proc == NULL) {
+	if (pid <= 0 || pid > PROC_MAX+1 || proc == NULL) 
+	{
 		return -1;
 	}
 
@@ -398,25 +401,21 @@ int proc_add(pid_t pid, struct proc *proc) {
 
 	return 0;
 }
-#endif
 
-#if OPT_C2OS
-void proc_remove(pid_t pid) {
-
+void proc_remove(pid_t pid) 
+{
 	spinlock_acquire(&processTable.lk);
 	processTable.proc[pid] = NULL;
 	spinlock_release(&processTable.lk);
 
 }
-#endif
 
-#if OPT_C2OS
-void call_enter_forked_process(void *tfv, unsigned long dummy) {
-
+void call_enter_forked_process(void *tfv, unsigned long dummy) 
+{
 	(void) dummy;
 
 	struct trapframe *tf = (struct trapframe *) tfv;
 	enter_forked_process(tf); 
-
 }
+
 #endif
