@@ -129,6 +129,12 @@ void proc_remove(pid_t pid);
 
 void call_enter_forked_process(void *tfv, unsigned long dummy);
 
+int add_new_child(struct proc* proc, pid_t child_pid);
+
+int destroy_child_list(struct proc* proc);
+
+int remove_child_from_list(struct proc* proc, pid_t child_pid);
+
 #endif
 
 

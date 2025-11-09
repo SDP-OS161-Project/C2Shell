@@ -418,4 +418,76 @@ void call_enter_forked_process(void *tfv, unsigned long dummy)
 	enter_forked_process(tf); 
 }
 
+int add_new_child(struct proc* proc, pid_t child_pid){
+	struct child_list* app=proc->children_list;
+
+	if(proc->children_list==NULL){
+		proc->children_list=(struct child_list *) kmalloc(sizeof(struct child_list));
+		if(proc->children_list==NULL)
+			return -1;
+		proc->children_list->next_child=NULL;
+		proc->children_list->child_pid=child_pid;
+		return 0;
+	}
+		
+
+	while(app->next_child!=NULL){
+		app=app->next_child;
+	}
+
+	app->next_child=(struct child_list *) kmalloc(sizeof(struct child_list));
+	if(app->next_child==NULL)
+		return -1;
+	app->next_child->next_child=NULL;
+	app->next_child->child_pid=child_pid;
+	return 0;
+}
+
+int destroy_child_list(struct proc* proc){
+	struct child_list* app=proc->children_list;
+	struct proc* child_proc;
+
+
+	while(app!=NULL){
+		proc->children_list=app->next_child;
+
+		/*FINDING THE CHILD STRUCTURE*/
+		child_proc=proc_search(app->child_pid);
+		if(child_proc==NULL)
+			return -1;
+
+		/*SETTING THE PARENT PID AS -1*/	
+		child_proc->parent_pid=-1;
+
+		/*REMOVING THE CHILD*/
+		app->next_child=NULL;
+		kfree(app);
+
+		app=proc->children_list;
+	}
+	
+	return 0;
+}
+
+int remove_child_from_list(struct proc* proc, pid_t child_pid){
+	struct child_list* app=proc->children_list;
+	struct child_list* prev_child=NULL;
+
+
+	while(app!=NULL){
+		if(app->child_pid==child_pid){
+			if(prev_child==NULL)
+				proc->children_list=app->next_child;
+			else
+				prev_child->next_child=app->next_child;
+			kfree(app);
+			return 0;
+		}
+		prev_child=app;
+		app=app->next_child;
+	}
+	
+	return -1;
+}
+
 #endif
