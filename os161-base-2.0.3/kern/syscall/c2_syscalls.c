@@ -53,12 +53,11 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     }
 
     err = vfs_open(kernB, openFlags, modeFile, &vn);
+    kfree(kernB);
     if (err)
     {
-        kfree(kernB);
         return err;
     }
-    kfree(kernB);
 
     int nElements = sizeof(systemFileTable) / sizeof(systemFileTable);
     for (int i = 0; i < nElements; i++)
@@ -127,9 +126,9 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
                 if (curproc->fileTable[i]->lockFile == NULL)
                 {
                     vfs_close(curproc->fileTable[i]->vn);
-                        kfree(curproc->fileTable[i]);
-                        curproc->fileTable[i] = NULL;
-                        return ENOMEM;
+                    kfree(curproc->fileTable[i]);
+                    curproc->fileTable[i] = NULL;
+                    return ENOMEM;
                 }
 
                 *returnVal = i;
@@ -290,6 +289,19 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     size_t nWrite = 0;
     char *kBuffer = NULL;
 
+    // Allocate a fixed-size kernel buffer
+    kBuffer = kmalloc(CHUNK_SIZE);
+    if (kBuffer == NULL) 
+    {
+        return ENOMEM;
+    }
+
+    if (fd < 0 || fd >= OPEN_MAX) 
+    {
+        kfree(kBuffer);
+        return EBADF;
+    }
+
     // Validate arguments
     if (buffer == NULL) 
     {
@@ -305,19 +317,6 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         return 0;
     }
 
-    // Allocate a fixed-size kernel buffer
-    kBuffer = kmalloc(CHUNK_SIZE);
-    if (kBuffer == NULL) 
-    {
-        return ENOMEM;
-    }
-
-    if (fd < 0 || fd >= OPEN_MAX) 
-    {
-        kfree(kBuffer);
-        return EBADF;
-    }
-
     fl = curproc->fileTable[fd];
     if (fl == NULL) 
     {
@@ -327,7 +326,7 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 
     // Check that file is opened for writing
     // TODO: add handling for different modes for example O_APPEND
-    if (fl->openFlags == O_RDONLY) 
+    if (fl->modeFile == O_RDONLY) 
     {
         kfree(kBuffer);
         return EBADF;
@@ -343,7 +342,6 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         if (res) 
         {
             kfree(kBuffer);
-            lock_release(fl->lockFile);
             return res;
         }
 
@@ -379,7 +377,7 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         lock_release(fl->lockFile);  
 
         // If the VOP wrote less or none break
-        if (wrote < nLen || wrote == 0) 
+        if (wrote == 0 || wrote < nLen) 
         {
             break;
         }
@@ -594,9 +592,15 @@ int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal)
     int res;
 
     /* Validate arguments */
-    if (buffer == NULL) {
+    if (buffer == NULL) 
+    {
         return EFAULT;
     }
+
+    // if (bufLen == 0)
+    // {
+    //     return EINVAL;
+    // }
 
     kBuffer = kmalloc(CHUNK_SIZE);
     if (kBuffer == NULL) 
@@ -605,12 +609,11 @@ int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal)
     }
 
     res = copyin((const_userptr_t)((uintptr_t)buffer), kBuffer, bufLen);
-
-        if (res) 
-        {
-            kfree(kBuffer);
-            return res;
-        }
+    if (res) 
+    {
+        kfree(kBuffer);
+        return res;
+    }
 
     /* Initialize kernel-side UIO for writing the path into user buffer */
     uio_kinit(&iov, &ku, kBuffer, bufLen, 0, UIO_READ);
