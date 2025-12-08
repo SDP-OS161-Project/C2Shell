@@ -20,6 +20,7 @@
 #include <current.h>
 #include <copyinout.h>
 #include <addrspace.h>
+#include "exec.h"
 
 int sys_getpid(pid_t *retvalpid) 
 {
@@ -144,7 +145,7 @@ int sys_fork(struct trapframe *ctf, pid_t *retval)
     }
 
     //copy adress space
-    auto err = as_copy(parent->p_addrspace, &child->p_addrspace);
+    int err = as_copy(parent->p_addrspace, &child->p_addrspace);
     if (err) 
     {
         proc_destroy(child);
@@ -204,78 +205,53 @@ int sys_execv(const char *progname, char *argv[])
 {
 	KASSERT(curproc != NULL);
 
-    if(progname == NULL || argv == NULL)
-    {
-        return EFAULT;
-    }
-
-    userptr_t prog = (userptr_t) progname;
-    userptr_t uargv = (userptr_t) argv;
-	
+    int result, argc;
 	vaddr_t entrypoint, stackptr;
-	int argc, err;
+	userptr_t user_prog = (userptr_t) progname;
+	userptr_t user_argv = (userptr_t) argv;
 
-	//copy program name to kernal space
-	char *kpath = kmalloc(PATH_MAX);
-	if (kpath == NULL) 
-    {
+	//allocate and copy program path to kernel space
+	char *kprog = kmalloc(PATH_MAX);
+	if (kprog == NULL) {
 		return ENOMEM;
 	}
 
-	err = copyinstr(prog, kpath, PATH_MAX, NULL);
-	if (err) 
-    {
-		kfree(kpath);
-		return err;
+	result = copyinstr(user_prog, kprog, PATH_MAX, NULL);
+	if (result) {
+		kfree(kprog);
+		return result;
 	}
 
-	if(kpath[0] == '\0')
-    { //empty path not allowed
-        kfree(kpath);
-        return EINVAL;
-    }
+    //prepare kernel-side argument buffer
+	struct exec_args args = {0}; 
 
-    //copy arguments from user space
-	argbuf_t kargv; 
-	argbuf_init(&kargv);
-
-	err = argbuf_fromuser(&kargv, uargv);
-	if (err) 
-    {
-		argbuf_cleanup(&kargv);
-		kfree(kpath);
-		return err;
+	result = argbuf_fromuser(&args, user_argv);
+	if (result) {
+		argbuf_cleanup(&args);
+		kfree(kprog);
+		return result;
 	}
 
-	/**
-	 * LOAD THE EXECUTABLE
-	 * NB: must not fail from here on, the old address space has been destroyed
-	 * 	   and, therefore, there is nothing to restore in case of failure.
-	 */
-	err = loadexec(kpath, &entrypoint, &stackptr);
-	if (err) 
-    {
-		argbuf_cleanup(&kargv);
-		kfree(kpath);
-		return err;
+	
+	//load and prepare the new executable image
+	result = loadexec(kprog, &entrypoint, &stackptr);
+	kfree(kprog); //path no longer needed 
+	if (result) {
+		argbuf_cleanup(&args);
+		return result;
 	}
 
-	kfree(kpath); //no longer needed
-
-	//copy arguments back to user stack
-	err = argbuf_copyout(&kargv, &stackptr, &argc, &uargv);
-	if (err) 
-    {
-		//at this stage failure is unrecoverable 
-		panic("execv: copyout_args failed: %s\n", strerror(err));
+	//copy arguments into the new user stack
+	result = argbuf_copyout(&args, &stackptr, &argc, &user_argv);
+	if (result) {
+		panic("sys_execv: argbuf_copyout failed: %s\n", strerror(result));
 	}
 
-	argbuf_cleanup(&kargv);
+	argbuf_cleanup(&args);
 
-	//enter the new process
-	enter_new_process(argc, uargv, NULL /*envp*/, stackptr, entrypoint);
+	//transition to user mode (never returns) 
+	enter_new_process(argc, user_argv, NULL, stackptr, entrypoint);
+	panic("sys_execv: enter_new_process returned unexpectedly\n");
 
-	//should never return
-	panic("enter_new_process returned\n");
 	return EINVAL;
 }
