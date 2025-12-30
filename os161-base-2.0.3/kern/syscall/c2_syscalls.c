@@ -158,12 +158,15 @@ int sys_close(int fd)
     {
         return EBADF; //there isnt an open file with this fd
     }
-    curproc->fileTable[fd] = NULL;
 
     lock_acquire(f->lockFile);
+    curproc->fileTable[fd] = NULL;
+
+    
     f->countRef--;
     if(f->countRef > 0)
     {
+        lock_release(f->lockFile);
         return 0; //still in use
     }
 
@@ -175,6 +178,7 @@ int sys_close(int fd)
     }
 
     kfree(f);
+    lock_release(f->lockFile);
     return 0;
 }
 
