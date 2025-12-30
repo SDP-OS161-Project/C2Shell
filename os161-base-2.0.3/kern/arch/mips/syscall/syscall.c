@@ -35,6 +35,8 @@
 #include <thread.h>
 #include <current.h>
 #include <syscall.h>
+#include <addrspace.h>
+#include "kern/c2_syscall.h"
 
 
 /*
@@ -132,9 +134,13 @@ syscall(struct trapframe *tf)
 		case SYS_chdir:
 			err = sys_chdir((userptr_t)tf->tf_a0);
 			break;
-		case SYS_getcwd:
+		case SYS___getcwd:
 			err = sys_getcwd((userptr_t)tf->tf_a0, tf->tf_a1, &retval);
 			break;
+		case SYS__exit:
+			sys_exit((int) tf->tf_a0);
+			err = 0;		
+		break;
 #endif
 
 	    default:
