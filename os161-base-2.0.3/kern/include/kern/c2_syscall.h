@@ -3,6 +3,7 @@
 
 #include <types.h>
 #include <lib.h>
+#include <stat.h>
 #include <mips/trapframe.h>
 #include "opt-c2os.h"
 
@@ -14,6 +15,8 @@ struct openfile {
     int openFlags;
     struct lock *lockFile;
 };
+
+struct proc;
 
 #if OPT_C2OS
 
@@ -43,6 +46,11 @@ int sys_fork(struct trapframe *ctf, pid_t *retval);
 
 int sys_execv(const char *progname, char *argv[]);
 
+void remove_child_node(struct proc *parent, pid_t child_pid);
+
+int sys_remove(const char *pathname);
+
+int sys_fstat(int fildes, struct stat *buf);
 #endif
 
 #endif

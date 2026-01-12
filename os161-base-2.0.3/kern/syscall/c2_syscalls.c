@@ -23,7 +23,25 @@
 
 struct openfile systemFileTable[SYSTEM_OPEN_MAX];
 
+/* * GLOBAL FILESYSTEM LOCK
+ * Defined globally here. Initialized in proc_bootstrap (proc.c).
+ * Used to serialize access to the emufs hardware simulator.
+ */
+struct lock *fs_global_lock = NULL;
+
 #if OPT_C2OS
+
+static void cleanup_openfile(struct openfile *of) {
+    if (of->vn) {
+        lock_acquire(fs_global_lock);
+        vfs_close(of->vn);
+        lock_release(fs_global_lock);
+    }
+    if (of->lockFile) {
+        lock_destroy(of->lockFile);
+    }
+    kfree(of);
+}
 
 int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *returnVal) 
 {
@@ -31,259 +49,232 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     struct vnode *vn;
     int err;
     char *kernB;
-    struct openfile *openF = NULL;
+    struct openfile *openF;
     struct stat fileStat;
-    
-    if (pathName == NULL)
-    {
-        return EFAULT;
-    }
+    int fd = -1;
 
-    kernB = (char *) kmalloc(PATH_MAX * sizeof(char) + 1);
-    if(kernB == NULL)
-    {
-        return ENOMEM;
-    }
+    if (pathName == NULL) return EFAULT;
 
+    /* 1. Allocate kernel buffer */
+    kernB = (char *) kmalloc(PATH_MAX);
+    if (kernB == NULL) return ENOMEM;
+
+    /* 2. Copy path from user space */
     err = copyinstr((const_userptr_t) pathName, kernB, PATH_MAX, &len);
-    if (err)
-    {
+    if (err) {
         kfree(kernB);
         return err;
     }
 
+    /* 3. Open the vnode */
+    lock_acquire(fs_global_lock);
     err = vfs_open(kernB, openFlags, modeFile, &vn);
-    kfree(kernB);
-    if (err)
-    {
-        return err;
+    lock_release(fs_global_lock);
+    
+    kfree(kernB); 
+    if (err) return err;
+
+    /* 4. Allocate Openfile Structure EARLY to avoid race cleanup mess later */
+    openF = (struct openfile *) kmalloc(sizeof(struct openfile));
+    if (openF == NULL) {
+        lock_acquire(fs_global_lock);
+        vfs_close(vn);
+        lock_release(fs_global_lock);
+        return ENOMEM;
     }
 
-    int nElements = sizeof(systemFileTable) / sizeof(systemFileTable);
-    for (int i = 0; i < nElements; i++)
-    {
-        if (systemFileTable[i].vn == NULL)
-        {
-            openF = &systemFileTable[i];
-            openF->vn = vn;
-            openF->openFlags = openFlags;
+    /* Initialize struct */
+    openF->vn = vn;
+    openF->offset = 0;
+    openF->countRef = 1;
+    openF->openFlags = openFlags;
+    openF->lockFile = lock_create("LOCK_FILE");
+    
+    if (openF->lockFile == NULL) {
+        cleanup_openfile(openF); // Helper handles vnode close
+        return ENOMEM;
+    }
+
+    /* Set Access Mode (Crucial for later read/write checks) */
+    switch (openFlags & O_ACCMODE) {
+        case O_RDONLY: openF->modeFile = O_RDONLY; break;
+        case O_WRONLY: openF->modeFile = O_WRONLY; break;
+        case O_RDWR:   openF->modeFile = O_RDWR;   break;
+        default:
+            cleanup_openfile(openF);
+            return EINVAL;
+    }
+
+    /* Handle O_APPEND */
+    if (openFlags & O_APPEND) {
+        lock_acquire(fs_global_lock);
+        err = VOP_STAT(vn, &fileStat);
+        lock_release(fs_global_lock);
+        if (err) {
+            cleanup_openfile(openF);
+            return err;
+        }
+        openF->offset = fileStat.st_size;
+    }
+
+    /* 5. Find free slot & Assign ATOMICALLY */
+    /* Assumes curproc has a lock called p_lock initialized */
+    lock_acquire(curproc->p_locklock); 
+    
+    /* Start from 0 to fill holes (e.g. if stdout was closed) */
+    for (int i = 0; i < OPEN_MAX; i++) {
+        if (curproc->fileTable[i] == NULL) {
+            fd = i;
+            curproc->fileTable[fd] = openF; // Claim it immediately
             break;
         }
     }
+    lock_release(curproc->p_locklock);
 
-    if (openF == NULL)
-    {
-        return ENFILE;
+    if (fd == -1) {
+        cleanup_openfile(openF);
+        return EMFILE;
     }
-    else
-    {
-        for (int i = 3; i < OPEN_MAX; i++)
-        {
-            if(i == (OPEN_MAX - 1))
-            {
-                return EMFILE;
-            }
-            else if (curproc->fileTable[i] == NULL)
-            {
-                curproc->fileTable[i] = openF;
-                if (openFlags & O_APPEND)
-                {
-                    err = VOP_STAT(curproc->fileTable[i]->vn, &fileStat);
-                    if (err)
-                    {
-                        kfree(curproc->fileTable[i]);
-                        curproc->fileTable[i] = NULL;
-                        return err;
-                    }
-                    curproc->fileTable[i]->offset = fileStat.st_size;
-                }
-                else
-                {
-                    curproc->fileTable[i]->offset = 0;
-                }
-                //TODO: find out if an atomic action should take place instead of this one
-                curproc->fileTable[i]->countRef = 1;
-
-                switch (openFlags & O_ACCMODE)
-                {
-                    case O_RDONLY:
-                        curproc->fileTable[i]->modeFile = O_RDONLY;
-                        break;
-                    case O_WRONLY:
-                        curproc->fileTable[i]->modeFile = O_WRONLY;
-                        break;
-                    case O_RDWR:
-                        curproc->fileTable[i]->modeFile = O_RDWR;
-                        break;
-                    default:
-                        vfs_close(curproc->fileTable[i]->vn);
-                        kfree(curproc->fileTable[i]);
-                        curproc->fileTable[i] = NULL;
-                        return EINVAL;
-                }
-
-                curproc->fileTable[i]->lockFile = lock_create("LOCK_FILE");
-                if (curproc->fileTable[i]->lockFile == NULL)
-                {
-                    vfs_close(curproc->fileTable[i]->vn);
-                    kfree(curproc->fileTable[i]);
-                    curproc->fileTable[i] = NULL;
-                    return ENOMEM;
-                }
-
-                *returnVal = i;
-
-                break;
-            }
-        }
-    }
-
+    
+    *returnVal = fd;
     return 0;
 }
 
 int sys_close(int fd)
 {
-    //reference: ops class documentation
-    //returns 0 on success, -1 on error, and errno is set to indicate the error
     struct openfile *f = NULL;
-    struct vnode *vn;
 
-    if(fd < 0 || fd > OPEN_MAX)
-    {
-        return EBADF; //invalid id for file
-    }
+    if(fd < 0 || fd >= OPEN_MAX) return EBADF; 
 
-    f = curproc->fileTable[fd];
-    if(f == NULL)
-    {
-        return EBADF; //there isnt an open file with this fd
-    }
-
-    lock_acquire(f->lockFile);
-    curproc->fileTable[fd] = NULL;
-
+    /* * CRITICAL SECTION: Process Table Modification
+     * We must detach the file from the table ATOMICALLY before 
+     * inspecting the file object to prevent race conditions.
+     */
+    lock_acquire(curproc->p_locklock);
     
+    f = curproc->fileTable[fd];
+    if(f == NULL) {
+        lock_release(curproc->p_locklock);
+        return EBADF; 
+    }
+    
+    curproc->fileTable[fd] = NULL; /* Detach */
+    
+    lock_release(curproc->p_locklock);
+
+    /* * Now we have the pointer 'f' safely detached from this process.
+     * We handle the reference counting.
+     */
+    lock_acquire(f->lockFile);
     f->countRef--;
-    if(f->countRef > 0)
-    {
+    
+    if (f->countRef > 0) {
+        /* Still in use by other processes (fork/dup2) */
         lock_release(f->lockFile);
-        return 0; //still in use
+        return 0;
     }
 
-    vn = f->vn;
-    f->vn = NULL;
-    if(vn != NULL)
-    {
-        vfs_close(vn); //closing the open file
-    }
-
-    kfree(f);
+    /* If RefCount == 0, we own the object completely. */
+    /* Release lock before destroying it */
     lock_release(f->lockFile);
+    
+    /* Clean up VFS and Memory */
+    if (f->vn != NULL) {
+        lock_acquire(fs_global_lock);
+        vfs_close(f->vn);
+        lock_release(fs_global_lock);
+    }
+
+    lock_destroy(f->lockFile);
+    kfree(f);
+    
     return 0;
 }
 
 int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 {
     struct openfile *fl;
-    struct vnode *vn;
     struct iovec iov;
     struct uio ku;
     int res;
-
-    char *kBuffer = NULL;
     size_t nRead = 0;
+    char *kBuffer = NULL;
 
-    if(fd < 0 || fd > OPEN_MAX)
-    {
-        return EBADF; //invalid id for file
-    }
-
+    /* 1. Basic Argument Validation */
+    if (fd < 0 || fd >= OPEN_MAX) return EBADF;
+    if (buffer == NULL) return EFAULT;
+    
+    /* 2. Retrieve Openfile (Thread-Safe fetch not strictly needed here as table is per-proc, 
+       but standard to check NULL) */
     fl = curproc->fileTable[fd];
-    if(fl == NULL)
-    {
-        return EBADF; //there isnt an open file with this fd
-    }
-    curproc->fileTable[fd] = NULL;
+    if (fl == NULL) return EBADF;
+    if (fl->vn == NULL) return EBADF;
 
-    vn = fl->vn;
-    if(vn == NULL)
-    {
-        return EBADF; 
-    }
+    /* 3. Check Access Mode */
+    if ((fl->openFlags & O_ACCMODE) == O_WRONLY) return EBADF;
 
-    if (buffer == NULL) 
-    {
-        return EFAULT;
-    }
-
-    // if (bufLen > SSIZE_MAX)
-    // {
-    //     return EINVAL;
-    // }
-
-    if (bufLen == 0) 
-    {
+    if (bufLen == 0) {
         *returnVal = 0;
         return 0;
     }
 
+    /* 4. Allocate Kernel Buffer */
     kBuffer = kmalloc(CHUNK_SIZE);
-    if (kBuffer == NULL)
-    {
-        return ENOMEM;
-    }
+    if (kBuffer == NULL) return ENOMEM;
+
+    /* 5. Acquire File Lock (Protects 'offset' from other threads sharing this fd) */
+    lock_acquire(fl->lockFile);
 
     while (nRead < bufLen) 
     {
         size_t remaining = bufLen - nRead;
         size_t nLen = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
 
-        lock_acquire(fl->lockFile);
-
+        /* Prepare UIO for Kernel Buffer */
         uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_READ);
 
-        res = VOP_READ(vn, &ku);
-        if (res) 
-        {
-            kfree(kBuffer);
+        /* --- CRITICAL SECTION: HARDWARE ACCESS --- */
+        lock_acquire(fs_global_lock);
+        res = VOP_READ(fl->vn, &ku);
+        lock_release(fs_global_lock);
+        /* ----------------------------------------- */
+
+        if (res) {
             lock_release(fl->lockFile);
-            return res;
-        }
-
-        size_t readThisChunk = nLen - ku.uio_resid;
-        fl->offset += readThisChunk;
-        lock_release(fl->lockFile);
-
-        if (readThisChunk == 0) 
-        {
-            break;
-        }
-
-        // copyout to user buffer at offset nRead
-        res = copyout(kBuffer, (userptr_t)((uintptr_t)buffer + nRead), readThisChunk);
-        if (res) 
-        {
             kfree(kBuffer);
             return res;
+        }
+
+        /* Calculate bytes actually read from disk */
+        size_t readThisChunk = nLen - ku.uio_resid;
+        
+        /* Update Offset (Protected by fl->lockFile) */
+        fl->offset += readThisChunk;
+
+        /* If we hit EOF (read 0 bytes), stop */
+        if (readThisChunk == 0) break;
+
+        /* Copy data from Kernel Buffer to User Buffer */
+        res = copyout(kBuffer, (userptr_t)((uintptr_t)buffer + nRead), readThisChunk);
+        if (res) {
+            lock_release(fl->lockFile);
+            kfree(kBuffer);
+            return res; /* likely EFAULT */
         }
 
         nRead += readThisChunk;
 
-        // If the VOP read less or none break
-        if (readThisChunk < nLen || readThisChunk == 0) 
-        {
-            break;
-        }
+        /* If we read less than requested (EOF or short read), stop */
+        if (readThisChunk < nLen) break;
     }
 
-    fl->offset += nRead;
-    *returnVal = nRead;
+    lock_release(fl->lockFile);
+    kfree(kBuffer);
+
+    *returnVal = (ssize_t)nRead;
     return 0;
 }
 
-// TODO: check whether it would be better to check the bufLen in order to create a kernel buffer
-// PageSize = 4096 bytes, so if bufLen is too large it may cause memory issues
-// it would be better to cycle and write in chunks of CHUNK_SIZE
 int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 {
     struct openfile *fl;
@@ -295,97 +286,67 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 
     // Allocate a fixed-size kernel buffer
     kBuffer = kmalloc(CHUNK_SIZE);
-    if (kBuffer == NULL) 
-    {
-        return ENOMEM;
-    }
+    if (kBuffer == NULL) return ENOMEM;
 
-    if (fd < 0 || fd >= OPEN_MAX) 
-    {
-        kfree(kBuffer);
-        return EBADF;
-    }
-
-    // Validate arguments
-    if (buffer == NULL) 
-    {
-        return EFAULT;
-    }
-    // if (bufLen > SSIZE_MAX) 
-    // {
-    //     return EINVAL;
-    // }
-    if (bufLen == 0) 
-    {
-        *returnVal = 0;
-        return 0;
-    }
+    if (fd < 0 || fd >= OPEN_MAX) { kfree(kBuffer); return EBADF; }
+    if (buffer == NULL) return EFAULT;
+    if (bufLen == 0) { *returnVal = 0; return 0; }
 
     fl = curproc->fileTable[fd];
-    if (fl == NULL) 
-    {
-        kfree(kBuffer);
-        return EBADF;
-    }
-
-    // Check that file is opened for writing
-    // TODO: add handling for different modes for example O_APPEND
-    if (fl->modeFile == O_RDONLY) 
-    {
-        kfree(kBuffer);
-        return EBADF;
-    }
-
+    if (fl == NULL) { kfree(kBuffer); return EBADF; }
+    if (fl->modeFile == O_RDONLY) { kfree(kBuffer); return EBADF; }
+    lock_acquire(fl->lockFile);
     while (nWrite < bufLen) 
     {
         size_t remaining = bufLen - nWrite;
         size_t nLen = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
 
-        // copyin from user buffer at offset nWrite
         res = copyin((const_userptr_t)((uintptr_t)buffer + nWrite), kBuffer, nLen);
-        if (res) 
-        {
+        if (res) {
             kfree(kBuffer);
+            lock_release(fl->lockFile);
             return res;
         }
 
-        // Acquire file lock for the duration of the write/update of offset
-        lock_acquire(fl->lockFile);
-
         uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_WRITE);
+
+        /* LOCK: Critical section for hardware write */
+        lock_acquire(fs_global_lock);
 
         if (fl->openFlags & O_APPEND) 
         {
             struct stat st;
             res = VOP_STAT(fl->vn, &st);
             if (res) {
+                lock_release(fs_global_lock);
                 kfree(kBuffer);
                 lock_release(fl->lockFile);
                 return res;
             }
             fl->offset = st.st_size;
+            /* Re-init uio with new offset */
+            uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_WRITE);
         }
 
         res = VOP_WRITE(fl->vn, &ku);
+
+        lock_release(fs_global_lock);
+
         if (res) 
         {
             kfree(kBuffer);
+            lock_release(fl->lockFile);
             return res;
         }
 
-        // Count actual bytes written in this chunk
         size_t wrote = nLen - ku.uio_resid;
         nWrite += wrote;
-        fl->offset += wrote;
+        fl->offset += wrote;  
 
-        lock_release(fl->lockFile);  
-
-        // If the VOP wrote less or none break
-        if (wrote == 0 || wrote < nLen) 
-        {
-            break;
-        }
+        if (wrote == 0 || wrote < nLen) break;
     }
+
+    lock_release(fl->lockFile);
 
     kfree(kBuffer);
     *returnVal = (ssize_t)nWrite;
@@ -399,21 +360,10 @@ int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
     struct stat st;
     int res;
 
-    if(fd < 0 || fd > OPEN_MAX)
-    {
-        return EBADF; //invalid id for file
-    }
-
+    if(fd < 0 || fd >= OPEN_MAX) return EBADF; 
     fl = curproc->fileTable[fd];
-    if(fl == NULL)
-    {
-        return EBADF; //there isnt an open file with this fd
-    }
-
-    if (!VOP_ISSEEKABLE(fl->vn))
-    {
-        return ESPIPE;
-    }
+    if(fl == NULL) return EBADF;
+    if (!VOP_ISSEEKABLE(fl->vn)) return ESPIPE;
 
     switch(whence)
     {
@@ -425,23 +375,20 @@ int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
             break;
         case SEEK_END:
         {
+            /* LOCK: VOP_STAT touches disk */
+            lock_acquire(fs_global_lock);
             res = VOP_STAT(fl->vn,  &st);
-            if(res)
-            {
-                return res;
-            }
+            lock_release(fs_global_lock);
+
+            if(res) return res;
 
             newOff = st.st_size + pos;
             break;
         }
-        default:
-            return EINVAL;
+        default: return EINVAL;
     }
 
-    if(newOff < 0)
-    {
-        return EINVAL;
-    }
+    if(newOff < 0) return EINVAL;
 
     lock_acquire(fl->lockFile);
     fl->offset = newOff;
@@ -451,82 +398,61 @@ int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
     return 0;
 }
 
-/*
-Error codes:
-EBADF: The file descriptor is not valid or is not open.
-EMFILE: The file descriptor table for the process is full or limit
-    was reached.
-ENFILE: The system-wide limit on the total number of open files has
-    been reached.
-*/
-int sys_dup2(int oldFd, int newFd, int *returnVal)
-{
-    struct openfile *oldfile;
-    struct openfile *newfile;
+int sys_dup2(int oldfd, int newfd, int *retval) {
     struct proc *p = curproc;
-    struct openfile *toClose = NULL;
+    struct openfile *old_of, *new_of_to_close = NULL;
 
-    /* Validate file descriptor range */
-    if (oldFd < 0 || oldFd >= OPEN_MAX || 
-        newFd < 0 || newFd >= OPEN_MAX)
-    {
+    if (oldfd < 0 || oldfd >= OPEN_MAX || newfd < 0 || newfd >= OPEN_MAX) return EBADF;
+    if (oldfd == newfd) { *retval = newfd; return 0; }
+
+    /* CRITICAL REGION START */
+    lock_acquire(p->p_locklock);
+    
+    old_of = p->fileTable[oldfd];
+    if (old_of == NULL) {
+        lock_release(p->p_locklock);
         return EBADF;
     }
 
-    /* If oldFd == newFd, do nothing per POSIX */
-    if (oldFd == newFd)
-    {
-        *returnVal = newFd;
-        return 0;
+    /* Grab the file lock to safely increment refcount */
+    lock_acquire(old_of->lockFile);
+    old_of->countRef++;
+    lock_release(old_of->lockFile);
+
+    /* Check if newfd needs closing */
+    if (p->fileTable[newfd] != NULL) {
+        new_of_to_close = p->fileTable[newfd];
     }
 
-    /* Check that oldFd is actually open */
-    /* TODO: Add check for global file count to be less or equal
-         than system max open files (SYSTEM_OPEN_MAX)
-    */
-    lock_acquire(p->fileTable[oldFd]->lockFile);
-    oldfile = p->fileTable[oldFd];
-    if (oldfile == NULL)
-    {
-        lock_release(p->fileTable[oldFd]->lockFile);
-        return EBADF;
+    /* The actual dup */
+    p->fileTable[newfd] = old_of;
+
+    lock_release(p->p_locklock);
+    /* CRITICAL REGION END */
+
+    /* Cleanup displaced file if it existed */
+    if (new_of_to_close != NULL) {
+        /* Use the same logic as sys_close here */
+        bool is_last = false;
+        
+        lock_acquire(new_of_to_close->lockFile);
+        new_of_to_close->countRef--;
+        if (new_of_to_close->countRef == 0) is_last = true;
+        lock_release(new_of_to_close->lockFile);
+
+        if (is_last) {
+            lock_acquire(fs_global_lock);
+            vfs_close(new_of_to_close->vn);
+            lock_release(fs_global_lock);
+            lock_destroy(new_of_to_close->lockFile);
+            kfree(new_of_to_close);
+        }
     }
 
-    /* If newFd already open, prepare to close it first */
-    newfile = p->fileTable[newFd];
-    if (newfile != NULL)
-    {
-        /* Drop the old reference */
-        toClose = newfile;
-        p->fileTable[newFd] = NULL;
-    }
-
-    /* Increment reference count on the existing file */
-    oldfile->countRef++;
-    p->fileTable[newFd] = oldfile;
-
-    lock_release(p->fileTable[oldFd]->lockFile);
-
-    if (toClose != NULL)
-    {
-        /* Close the old file outside the lock */
-        oldfile->countRef--;
-        //TODO: check coutRef = 0
-    }
-
-    *returnVal = newFd;
+    *retval = newfd;
     return 0;
 }
 
-/*
-Error codes:
-- ENODEV: device prefix of pathname did not exist
-- ENOTDIR: a non-final component of the path prefix is not a directory
-- ENOTDIR: the final component of the path prefix is not a directory
-- ENOENT: did not exist
-- EIO: a hard io error occurred
-- EFAULT: pathName points to an invalid address
-*/
 int sys_chdir(userptr_t pathName)
 {
     size_t len;
@@ -534,108 +460,135 @@ int sys_chdir(userptr_t pathName)
     int err;
     char *kernB;
 
-    if (pathName == NULL)
-    {
-        return EFAULT;
-    }
+    if (pathName == NULL) return EFAULT;
 
     kernB = (char *) kmalloc(PATH_MAX * sizeof(char) + 1);
-    if(kernB == NULL)
-    {
-        return ENOMEM;
-    }
+    if(kernB == NULL) return ENOMEM;
 
     err = copyinstr((const_userptr_t) pathName, kernB, PATH_MAX, &len);
-    if (err)
-    {
+    if (err) {
         kfree(kernB);
         return err;
     }
 
+    /* LOCK: vfs_lookup touches disk */
+    lock_acquire(fs_global_lock);
     err = vfs_lookup(kernB, &vn);
-    kfree(kernB);
-    if (err)
-    {
-        return err;
-    }
+    lock_release(fs_global_lock);
 
-    //check if it is a directory
+    kfree(kernB);
+    if (err) return err;
+
     struct stat fileStat;
+
+    lock_acquire(fs_global_lock);
     err = VOP_STAT(vn, &fileStat);
+    lock_release(fs_global_lock);
+
     if (err)
     {
+        lock_acquire(fs_global_lock);
         vfs_close(vn);
+        lock_release(fs_global_lock);
         return err;
     }
     
     if ((fileStat.st_mode & S_IFDIR) == 0)
     {
+        lock_acquire(fs_global_lock);
         vfs_close(vn);
+        lock_release(fs_global_lock);
         return ENOTDIR;
     }
 
     //it is a directory
-    vfs_close(curproc->p_cwd);
+    struct vnode *old_cwd = curproc->p_cwd;
     curproc->p_cwd = vn;
+    
+    if (old_cwd != NULL) {
+        lock_acquire(fs_global_lock);
+        vfs_close(old_cwd);
+        lock_release(fs_global_lock);
+    }
 
     return 0;
 }
 
-/*
-Error codes:
-- ENOENT: a component of the pathname no longer exists
-- EIO: a hard io error occurred
-- EFAULT: buf points to an invalid address space
-*/
 int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal)
 {
     int result;
     struct iovec iov;
     struct uio ku;
     char *kBuffer = NULL;
-    int res;
 
-    /* Validate arguments */
-    if (buffer == NULL) 
-    {
-        return EFAULT;
-    }
-
-    // if (bufLen == 0)
-    // {
-    //     return EINVAL;
-    // }
+    if (buffer == NULL) return EFAULT;
 
     kBuffer = kmalloc(CHUNK_SIZE);
-    if (kBuffer == NULL) 
-    {
-        return ENOMEM;
-    }
+    if (kBuffer == NULL) return ENOMEM;
 
-    res = copyin((const_userptr_t)((uintptr_t)buffer), kBuffer, bufLen);
-    if (res) 
-    {
-        kfree(kBuffer);
-        return res;
-    }
+    uio_kinit(&iov, &ku, kBuffer, bufLen < CHUNK_SIZE ? bufLen : CHUNK_SIZE, 0, UIO_READ);
 
-    /* Initialize kernel-side UIO for writing the path into user buffer */
-    uio_kinit(&iov, &ku, kBuffer, bufLen, 0, UIO_READ);
-
-    /* Ask the VFS for the current working directory */
+    lock_acquire(fs_global_lock);
     result = vfs_getcwd(&ku);
+    lock_release(fs_global_lock);
+
     if (result) {
-        /*
-         * vfs_getcwd() already returns the correct codes:
-         *   ENOENT if cwd vanished
-         *   EIO on disk error
-         *   EFAULT if copyout failed (invalid user pointer)
-         */
+        kfree(kBuffer);
         return result;
     }
 
-    /* Success: uio_resid is bytes left, so subtract from buflen */
-    *returnVal = bufLen - ku.uio_resid;
+    /* Calculate how much data was written to kBuffer */
+    size_t actualLen = (bufLen < CHUNK_SIZE ? bufLen : CHUNK_SIZE) - ku.uio_resid;
+
+    /* FIX: Now copy the path out to the user */
+    result = copyout(kBuffer, buffer, actualLen);
+    
+    kfree(kBuffer);
+
+    if (result) {
+        return result;
+    }
+
+    *returnVal = actualLen;
+    return 0;
+}
+
+/**
+ * sys_remove - Remove a file from the filesystem.
+ * @pathname: The path of the file to be removed.
+ *
+ * This function is a placeholder for the system call to remove a file.
+ * Currently, it is not implemented and simply returns success.
+ *
+ * Return: Always returns 0 indicating success.
+ */
+int sys_remove(const char *pathname)
+{
+
+    /* NOT IMPLEMENTED (YET?) */
+    (void)pathname;
+
+    /* TASK COMPLETED SUCCESSFULLY */
+    return 0;
+}
+
+/**
+ * sys_fstat - Retrieves the status of an open file.
+ *
+ * @param fildes: The file descriptor of the file.
+ * @param buf: Pointer to a stat structure to store the file status.
+ *
+ * @return: 0 on success, or an error code on failure.
+ *
+ * This function is a stub and currently does nothing. It is intended to retrieve
+ * the status of the file associated with the file descriptor fildes and store it
+ * in the stat structure pointed to by buf.
+ */
+int sys_fstat(int fildes, struct stat *buf)
+{
+    (void)fildes;
+    (void)buf;
+
     return 0;
 }
 

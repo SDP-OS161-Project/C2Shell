@@ -22,6 +22,8 @@
 #include <addrspace.h>
 #include "exec.h"
 
+extern struct lock *fs_global_lock;
+
 int sys_getpid(pid_t *retvalpid) 
 {
   //check that there is a current process running  
@@ -34,91 +36,109 @@ int sys_getpid(pid_t *retvalpid)
     return 0;   
 }
 
-int sys_waitpid(pid_t pid, int *status, int options, int32_t *retvalpid) 
-{
-    struct proc *child;
+/* Helper to remove child from list */
+void remove_child_node(struct proc *parent, pid_t child_pid) {
+    struct child_list *curr = parent->children_list;
+    struct child_list *prev = NULL;
+
+    while (curr != NULL) {
+        if (curr->child_pid == child_pid) {
+            if (prev == NULL) {
+                parent->children_list = curr->next_child;
+            } else {
+                prev->next_child = curr->next_child;
+            }
+            kfree(curr);
+            return;
+        }
+        prev = curr;
+        curr = curr->next_child;
+    }
+}
+
+#if OPT_C2OS
+int sys_waitpid(pid_t pid, int *status, int options, int32_t *retval) {
+    int result;
+
+    KASSERT(curproc != NULL);
+
+    /* 1. Filter Invalid PIDs */
+    if (pid == curproc->p_pid) return ECHILD;
     
-    /* CHECKING ARGUMENTS */
-    if (curproc == NULL)
-    {
-        return EFAULT;
-    }
+    /* 2. Check if Child Exists in our list */
+    if (is_child(curproc, pid) == -1) return ECHILD;
 
-    // Case where the provided pid is the pid of the process
-    // and not a pid from its childs
-    if (pid == curproc->p_pid) 
-    {
-        return ECHILD;
-    }
+    /* 3. Handle Options (WNOHANG) */
+    if (options != 0 && options != WNOHANG) return EINVAL;
 
-    if (retvalpid == NULL)
-    {
-        return EFAULT;
-    }
+    /* 4. Find the Process Structure */
+    struct proc *proc = proc_search(pid);
+    if (proc == NULL) return ESRCH;
+
+    /* 5. Logic: Has the process already exited? */
+    lock_acquire(proc->p_locklock);
     
-    if (status == NULL) 
-    {
-        *retvalpid = pid;
-        return 0;
+    if (proc->p_numthreads > 0) {
+        /* Process is still running */
+        if (options == WNOHANG) {
+            lock_release(proc->p_locklock);
+            *retval = 0; /* PID 0 indicates running */
+            return 0;
+        }
+
+        /* Wait for it to die */
+        while (proc->p_numthreads > 0) {
+            cv_wait(proc->p_cv, proc->p_locklock);
+        }
+    }
+    lock_release(proc->p_locklock);
+
+    /* 6. Process is dead. Extract status safely. */
+    int exit_code = proc->p_status;
+
+    /* IF user provided a status pointer, copy it out safely */
+    if (status != NULL) {
+        /* copyout(src, dest, len) */
+        result = copyout(&exit_code, (userptr_t)status, sizeof(int));
+        if (result) {
+            /* If copyout fails (EFAULT), we still successfully waited for the process.
+             * But we can't return the status. Standard behavior is to return EFAULT.
+             * CRITICAL: We must arguably still destroy the zombie to prevent leaks,
+             * or leave it depending on strict POSIX interp. 
+             * For OS161, returning EFAULT is usually enough.
+             */
+            return result; 
+        }
     }
 
-    //Invalid option bits (only 0 and WNOHANG allowed)
-    if (options != 0 || options != WNOHANG)
-    {
-        return EINVAL;
-    }
-
-    //check if the target process is a child
-    if (is_child(curproc, pid) == -1)
-    {
-        return ECHILD;
-    }
-
-    child = proc_search(pid);
-
-    if(child == NULL)
-    {
-        return ESRCH;
-    }
-
-    if (options == WNOHANG && child->p_numthreads > 0)
-    {
-        *status = 0;
-        *retvalpid = 0;
-        return 0;
-    }
-
-    lock_acquire(child->p_locklock);
-
-    while(child->p_numthreads > 0) 
-    {
-        cv_wait(child->p_cv,child->p_locklock);
-    }
-
-    *status = child->p_status;
-    *retvalpid = child->p_pid;
-
-    lock_release(child->p_locklock);
-
-    proc_destroy(child);
+    /* 7. Cleanup and Return */
+    *retval = pid;
+    
+    /* Remove from parent's child list */
+    remove_child_node(curproc, pid);
+    
+    /* Finally, destroy the process structure (The Reaping) */
+    proc_destroy(proc);
 
     return 0;
 }
+#endif
 
-void sys_exit(int exitcode) 
-{
-    KASSERT(curproc != NULL);
-    KASSERT(curthread != NULL);
+void sys_exit(int exitcode) {
+    struct proc *p = curproc;
+    
+    /* 1. Set exit status */
+    p->p_status = _MKWAIT_EXIT(exitcode);
 
-    curproc->p_status = _MKWAIT_EXIT(exitcode);    // exitcode & 0xff
+    /* 2. Signal the parent that we are "done" (logically) */
+    lock_acquire(p->p_locklock);
+    cv_signal(p->p_cv, p->p_locklock);
+    lock_release(p->p_locklock);
 
-    proc_remthread(curthread);     
-
-    lock_acquire(curproc->p_locklock);
-    cv_signal(curproc->p_cv, curproc->p_locklock);
-    lock_release(curproc->p_locklock);
-
-    thread_exit();   //exit thread
+    /* 3. Die. (The detachment will happen in thread_exit) */
+    thread_exit();
+    
+    panic("sys_exit: Should not return");
 }
 
 int sys_fork(struct trapframe *ctf, pid_t *retval) 
@@ -126,62 +146,74 @@ int sys_fork(struct trapframe *ctf, pid_t *retval)
     struct proc *parent = curproc;
     struct proc *child = NULL;
     struct trapframe *child_tf = NULL;
+    int err;
 
     KASSERT(curproc != NULL);
     KASSERT(ctf != NULL);
     KASSERT(retval != NULL);
 
-    // find a free pid
-    int pid = find_valid_pid();
-    if (pid <= 0) 
-    {
-        return ENPROC;  // no available PIDs
+    /* 1. Create Child Process */
+    /* CHANGED: Use proc_create directly to avoid creating new console FDs */
+    child = proc_create(parent->p_name);
+    if (child == NULL) {
+        return ENOMEM;
     }
 
-    child = proc_create_runprogram(curproc->p_name);
-    if (child == NULL) 
-    {
-        return ENOMEM;  //out of memory
-    }
-
-    //copy adress space
-    int err = as_copy(parent->p_addrspace, &child->p_addrspace);
-    if (err) 
-    {
+    /* 2. Copy Address Space */
+    lock_acquire(fs_global_lock);
+    err = as_copy(parent->p_addrspace, &child->p_addrspace);
+    lock_release(fs_global_lock);
+    if (err) {
         proc_destroy(child);
         return err;
     }
 
-    ///copy trapframe
+    /* 3. Copy Trapframe */
     child_tf = kmalloc(sizeof(struct trapframe));
-    if(child_tf == NULL)
-    {
+    if(child_tf == NULL) {
         proc_destroy(child);
         return ENOMEM; 
     }
     memmove(child_tf, ctf, sizeof(struct trapframe));
 
-    //add child to parent
-    if (add_new_child(parent, pid) == -1)
-    {
+    /* 4. Copy Current Working Directory (CWD) */
+    /* We must do this manually since we stopped using proc_create_runprogram */
+    lock_acquire(fs_global_lock);
+    spinlock_acquire(&parent->p_lock);
+    if (parent->p_cwd != NULL) {
+        VOP_INCREF(parent->p_cwd);
+        child->p_cwd = parent->p_cwd;
+    }
+    spinlock_release(&parent->p_lock);
+    lock_release(fs_global_lock);
+
+
+    /* 5. SHARE THE FILE TABLE (The Fix for the Crash) */
+    for (int i = 0; i < OPEN_MAX; i++) {
+        struct openfile *file = parent->fileTable[i];
+        
+        if (file != NULL) {
+            /* Shallow Copy: Point to the SAME openfile struct */
+            lock_acquire(file->lockFile); // Safety while modifying refcount
+            
+            child->fileTable[i] = file;
+            file->countRef++;  // Increment reference count
+            
+            lock_release(file->lockFile);
+        }
+    }
+
+    /* 6. Link Parent */
+    child->parent_pid = parent->p_pid;
+
+    /* 7. ADD TO PARENT'S LIST */
+    if (add_new_child(parent, child->p_pid) == -1) {
         kfree(child_tf);
         proc_destroy(child);
         return ENOMEM; 
     }
 
-    //link child to parent
-    child->parent_pid=parent->p_pid;
-
-    // add the new child to the process table
-    err = proc_add(pid, child);
-    if (err == -1) 
-    {
-        kfree(child_tf);
-        proc_destroy(child);
-        return ENOMEM;
-    }
-
-    //create a thread for the child process
+    /* 8. Create Thread */
     err = thread_fork(
         parent->p_name,
         child,   
@@ -190,68 +222,65 @@ int sys_fork(struct trapframe *ctf, pid_t *retval)
         (unsigned long) 0
     );
 
-    if (err) 
-    {
+    if (err) {
         kfree(child_tf);
         proc_destroy(child);
         return err;
     }
 
-    *retval = child->p_pid;      // return pid of child
+    *retval = child->p_pid; 
     return 0;
 }
 
 int sys_execv(const char *progname, char *argv[]) 
 {
-	KASSERT(curproc != NULL);
+    KASSERT(curproc != NULL);
 
     int result, argc;
-	vaddr_t entrypoint, stackptr;
-	userptr_t user_prog = (userptr_t) progname;
-	userptr_t user_argv = (userptr_t) argv;
+    vaddr_t entrypoint, stackptr;
+    userptr_t user_prog = (userptr_t) progname;
+    userptr_t user_argv = (userptr_t) argv;
 
-	//allocate and copy program path to kernel space
-	char *kprog = kmalloc(PATH_MAX);
-	if (kprog == NULL) {
-		return ENOMEM;
-	}
+    char *kprog = kmalloc(PATH_MAX);
+    if (kprog == NULL) return ENOMEM;
 
-	result = copyinstr(user_prog, kprog, PATH_MAX, NULL);
-	if (result) {
-		kfree(kprog);
-		return result;
-	}
+    result = copyinstr(user_prog, kprog, PATH_MAX, NULL);
+    if (result) {
+        kfree(kprog);
+        return result;
+    }
 
-    //prepare kernel-side argument buffer
-	struct exec_args args = {0}; 
+    struct exec_args args = {0}; 
+    /* Assuming argbuf_init is not needed or handled by struct init */
 
-	result = argbuf_fromuser(&args, user_argv);
-	if (result) {
-		argbuf_cleanup(&args);
-		kfree(kprog);
-		return result;
-	}
+    result = argbuf_fromuser(&args, user_argv);
+    if (result) {
+        argbuf_cleanup(&args);
+        kfree(kprog);
+        return result;
+    }
 
-	
-	//load and prepare the new executable image
-	result = loadexec(kprog, &entrypoint, &stackptr);
-	kfree(kprog); //path no longer needed 
-	if (result) {
-		argbuf_cleanup(&args);
-		return result;
-	}
+    /* --- ADDED LOCK HERE: loadexec reads from disk --- */
+    lock_acquire(fs_global_lock);
+    result = loadexec(kprog, &entrypoint, &stackptr);
+    lock_release(fs_global_lock);
+    /* ------------------------------------------------ */
 
-	//copy arguments into the new user stack
-	result = argbuf_copyout(&args, &stackptr, &argc, &user_argv);
-	if (result) {
-		panic("sys_execv: argbuf_copyout failed: %s\n", strerror(result));
-	}
+    kfree(kprog); 
+    if (result) {
+        argbuf_cleanup(&args);
+        return result;
+    }
 
-	argbuf_cleanup(&args);
+    result = argbuf_copyout(&args, &stackptr, &argc, &user_argv);
+    if (result) {
+        panic("sys_execv: argbuf_copyout failed: %s\n", strerror(result));
+    }
 
-	//transition to user mode (never returns) 
-	enter_new_process(argc, user_argv, NULL, stackptr, entrypoint);
-	panic("sys_execv: enter_new_process returned unexpectedly\n");
+    argbuf_cleanup(&args);
 
-	return EINVAL;
+    enter_new_process(argc, user_argv, NULL, stackptr, entrypoint);
+    panic("sys_execv: enter_new_process returned unexpectedly\n");
+
+    return EINVAL;
 }

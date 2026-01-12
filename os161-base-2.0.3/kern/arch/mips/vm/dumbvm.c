@@ -124,8 +124,6 @@ vm_bootstrap(void)
 
 	return;
 #endif
-
-
 }
 
 /*
@@ -185,7 +183,7 @@ static paddr_t getfreeppages(unsigned long npages){
 	}
 	/* Checks if the space is availbale */
 	if (startAddr != -1) {
-		for (long int i = 0; i < startAddr + (long int)npages; i++) {
+		for (long int i = startAddr; i < startAddr + (long int)npages; i++) {
 			bitmapFreePages[i] = 0;				/* Updating positions bitmap */
 		}
 		bitmapSizePages[startAddr] = npages;		/* Updating dimensions bitmap */
@@ -334,6 +332,10 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 
 	DEBUG(DB_VM, "dumbvm: fault: 0x%x\n", faultaddress);
 
+	if (curproc == NULL || curproc->p_addrspace == NULL) {
+    	return EFAULT;
+	}
+
 	switch (faulttype) {
 	    case VM_FAULT_READONLY:
 		/* We always create pages read-write, so we can't get this */
@@ -443,8 +445,23 @@ as_create(void)
 void
 as_destroy(struct addrspace *as)
 {
-	dumbvm_can_sleep();
-	kfree(as);
+    dumbvm_can_sleep();
+
+#if OPT_C2OS
+    if (as) {
+        if (as->as_pbase1) {
+            freeppages(as->as_pbase1, as->as_npages1);
+        }
+        if (as->as_pbase2) {
+            freeppages(as->as_pbase2, as->as_npages2);
+        }
+        if (as->as_stackpbase) {
+            freeppages(as->as_stackpbase, DUMBVM_STACKPAGES);
+        }
+	}
+#endif
+
+    kfree(as);
 }
 
 void
