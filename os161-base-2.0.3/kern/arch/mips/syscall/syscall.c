@@ -235,15 +235,13 @@ enter_forked_process(struct trapframe *tf)
 	#if OPT_C2OS
 
 	struct trapframe forkedTf = *(struct trapframe *)tf;
-
 	kfree(tf); /* Free the data */
-
-	as_activate();
 
 	forkedTf.tf_v0 = 0; 	// return value is 0
     forkedTf.tf_a3 = 0; 	// return with success
 	forkedTf.tf_epc += 4; 	// return to next instruction
 
+	as_activate();
 	mips_usermode(&forkedTf);
   #else
 	(void)tf;

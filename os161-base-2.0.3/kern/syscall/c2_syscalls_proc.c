@@ -82,7 +82,8 @@ int sys_waitpid(pid_t pid, int *status, int options, int32_t *retval) {
         /* Process is still running */
         if (options == WNOHANG) {
             lock_release(proc->p_locklock);
-            *retval = 0; /* PID 0 indicates running */
+            *status = 0;
+            *retval = pid;
             return 0;
         }
 

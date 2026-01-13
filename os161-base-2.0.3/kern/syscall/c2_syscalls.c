@@ -31,17 +31,17 @@ struct lock *fs_global_lock = NULL;
 
 #if OPT_C2OS
 
-static void cleanup_openfile(struct openfile *of) {
-    if (of->vn) {
-        lock_acquire(fs_global_lock);
-        vfs_close(of->vn);
-        lock_release(fs_global_lock);
-    }
-    if (of->lockFile) {
-        lock_destroy(of->lockFile);
-    }
-    kfree(of);
-}
+// static void cleanup_openfile(struct openfile *of) {
+//     if (of->vn) {
+//         lock_acquire(fs_global_lock);
+//         vfs_close(of->vn);
+//         lock_release(fs_global_lock);
+//     }
+//     if (of->lockFile) {
+//         lock_destroy(of->lockFile);
+//     }
+//     kfree(of);
+// }
 
 int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *returnVal) 
 {
@@ -91,7 +91,10 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     openF->lockFile = lock_create("LOCK_FILE");
     
     if (openF->lockFile == NULL) {
-        cleanup_openfile(openF); // Helper handles vnode close
+        lock_acquire(fs_global_lock);
+        vfs_close(vn);
+        lock_release(fs_global_lock);
+        kfree(openF);
         return ENOMEM;
     }
 
@@ -101,7 +104,11 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
         case O_WRONLY: openF->modeFile = O_WRONLY; break;
         case O_RDWR:   openF->modeFile = O_RDWR;   break;
         default:
-            cleanup_openfile(openF);
+            lock_acquire(fs_global_lock);
+            vfs_close(vn);
+            lock_release(fs_global_lock);
+            lock_destroy(openF->lockFile);
+            kfree(openF);
             return EINVAL;
     }
 
@@ -111,7 +118,11 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
         err = VOP_STAT(vn, &fileStat);
         lock_release(fs_global_lock);
         if (err) {
-            cleanup_openfile(openF);
+            lock_acquire(fs_global_lock);
+            vfs_close(vn);
+            lock_release(fs_global_lock);
+            lock_destroy(openF->lockFile);
+            kfree(openF);
             return err;
         }
         openF->offset = fileStat.st_size;
@@ -122,17 +133,22 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     lock_acquire(curproc->p_locklock); 
     
     /* Start from 0 to fill holes (e.g. if stdout was closed) */
-    for (int i = 0; i < OPEN_MAX; i++) {
-        if (curproc->fileTable[i] == NULL) {
-            fd = i;
+    for (int i = 3; i < OPEN_MAX; i++) {
+        if (curproc->fileTable[i] == NULL) 
+        {
             curproc->fileTable[fd] = openF; // Claim it immediately
+            fd = i;
             break;
         }
     }
     lock_release(curproc->p_locklock);
 
-    if (fd == -1) {
-        cleanup_openfile(openF);
+    if (fd <= -1) {
+        lock_acquire(fs_global_lock);
+        vfs_close(vn);
+        lock_release(fs_global_lock);
+        lock_destroy(openF->lockFile);
+        kfree(openF);
         return EMFILE;
     }
     
@@ -166,6 +182,7 @@ int sys_close(int fd)
      * We handle the reference counting.
      */
     lock_acquire(f->lockFile);
+    KASSERT(f->countRef > 0);
     f->countRef--;
     
     if (f->countRef > 0) {
@@ -175,8 +192,6 @@ int sys_close(int fd)
     }
 
     /* If RefCount == 0, we own the object completely. */
-    /* Release lock before destroying it */
-    lock_release(f->lockFile);
     
     /* Clean up VFS and Memory */
     if (f->vn != NULL) {
@@ -185,6 +200,7 @@ int sys_close(int fd)
         lock_release(fs_global_lock);
     }
 
+    lock_release(f->lockFile);
     lock_destroy(f->lockFile);
     kfree(f);
     
@@ -295,6 +311,7 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     fl = curproc->fileTable[fd];
     if (fl == NULL) { kfree(kBuffer); return EBADF; }
     if (fl->modeFile == O_RDONLY) { kfree(kBuffer); return EBADF; }
+
     lock_acquire(fl->lockFile);
     while (nWrite < bufLen) 
     {
@@ -311,14 +328,15 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_WRITE);
 
         /* LOCK: Critical section for hardware write */
-        lock_acquire(fs_global_lock);
 
         if (fl->openFlags & O_APPEND) 
         {
             struct stat st;
+            lock_acquire(fs_global_lock);
             res = VOP_STAT(fl->vn, &st);
+            lock_release(fs_global_lock);
+            
             if (res) {
-                lock_release(fs_global_lock);
                 kfree(kBuffer);
                 lock_release(fl->lockFile);
                 return res;
@@ -328,8 +346,8 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
             uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_WRITE);
         }
 
+        lock_acquire(fs_global_lock);
         res = VOP_WRITE(fl->vn, &ku);
-
         lock_release(fs_global_lock);
 
         if (res) 
