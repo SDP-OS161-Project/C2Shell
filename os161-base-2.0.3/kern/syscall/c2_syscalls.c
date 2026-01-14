@@ -23,25 +23,7 @@
 
 struct openfile systemFileTable[SYSTEM_OPEN_MAX];
 
-/* * GLOBAL FILESYSTEM LOCK
- * Defined globally here. Initialized in proc_bootstrap (proc.c).
- * Used to serialize access to the emufs hardware simulator.
- */
-struct lock *fs_global_lock = NULL;
-
 #if OPT_C2OS
-
-// static void cleanup_openfile(struct openfile *of) {
-//     if (of->vn) {
-//         lock_acquire(fs_global_lock);
-//         vfs_close(of->vn);
-//         lock_release(fs_global_lock);
-//     }
-//     if (of->lockFile) {
-//         lock_destroy(of->lockFile);
-//     }
-//     kfree(of);
-// }
 
 int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *returnVal) 
 {
@@ -67,9 +49,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     }
 
     /* 3. Open the vnode */
-    lock_acquire(fs_global_lock);
     err = vfs_open(kernB, openFlags, modeFile, &vn);
-    lock_release(fs_global_lock);
     
     kfree(kernB); 
     if (err) return err;
@@ -77,9 +57,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     /* 4. Allocate Openfile Structure EARLY to avoid race cleanup mess later */
     openF = (struct openfile *) kmalloc(sizeof(struct openfile));
     if (openF == NULL) {
-        lock_acquire(fs_global_lock);
         vfs_close(vn);
-        lock_release(fs_global_lock);
         return ENOMEM;
     }
 
@@ -91,9 +69,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     openF->lockFile = lock_create("LOCK_FILE");
     
     if (openF->lockFile == NULL) {
-        lock_acquire(fs_global_lock);
         vfs_close(vn);
-        lock_release(fs_global_lock);
         kfree(openF);
         return ENOMEM;
     }
@@ -104,9 +80,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
         case O_WRONLY: openF->modeFile = O_WRONLY; break;
         case O_RDWR:   openF->modeFile = O_RDWR;   break;
         default:
-            lock_acquire(fs_global_lock);
             vfs_close(vn);
-            lock_release(fs_global_lock);
             lock_destroy(openF->lockFile);
             kfree(openF);
             return EINVAL;
@@ -114,13 +88,9 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
 
     /* Handle O_APPEND */
     if (openFlags & O_APPEND) {
-        lock_acquire(fs_global_lock);
         err = VOP_STAT(vn, &fileStat);
-        lock_release(fs_global_lock);
         if (err) {
-            lock_acquire(fs_global_lock);
             vfs_close(vn);
-            lock_release(fs_global_lock);
             lock_destroy(openF->lockFile);
             kfree(openF);
             return err;
@@ -144,9 +114,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     lock_release(curproc->p_locklock);
 
     if (fd <= -1) {
-        lock_acquire(fs_global_lock);
         vfs_close(vn);
-        lock_release(fs_global_lock);
         lock_destroy(openF->lockFile);
         kfree(openF);
         return EMFILE;
@@ -195,9 +163,7 @@ int sys_close(int fd)
     
     /* Clean up VFS and Memory */
     if (f->vn != NULL) {
-        lock_acquire(fs_global_lock);
         vfs_close(f->vn);
-        lock_release(fs_global_lock);
     }
 
     lock_release(f->lockFile);
@@ -250,9 +216,7 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_READ);
 
         /* --- CRITICAL SECTION: HARDWARE ACCESS --- */
-        //lock_acquire(fs_global_lock);
         res = VOP_READ(fl->vn, &ku);
-        //lock_release(fs_global_lock);
         /* ----------------------------------------- */
 
         if (res) {
@@ -332,9 +296,7 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         if (fl->openFlags & O_APPEND) 
         {
             struct stat st;
-            lock_acquire(fs_global_lock);
             res = VOP_STAT(fl->vn, &st);
-            lock_release(fs_global_lock);
             
             if (res) {
                 kfree(kBuffer);
@@ -346,9 +308,7 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
             uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_WRITE);
         }
 
-        lock_acquire(fs_global_lock);
         res = VOP_WRITE(fl->vn, &ku);
-        lock_release(fs_global_lock);
 
         if (res) 
         {
@@ -394,9 +354,7 @@ int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
         case SEEK_END:
         {
             /* LOCK: VOP_STAT touches disk */
-            lock_acquire(fs_global_lock);
             res = VOP_STAT(fl->vn,  &st);
-            lock_release(fs_global_lock);
 
             if(res) return res;
 
@@ -459,9 +417,7 @@ int sys_dup2(int oldfd, int newfd, int *retval) {
         lock_release(new_of_to_close->lockFile);
 
         if (is_last) {
-            lock_acquire(fs_global_lock);
             vfs_close(new_of_to_close->vn);
-            lock_release(fs_global_lock);
             lock_destroy(new_of_to_close->lockFile);
             kfree(new_of_to_close);
         }
@@ -490,32 +446,24 @@ int sys_chdir(userptr_t pathName)
     }
 
     /* LOCK: vfs_lookup touches disk */
-    lock_acquire(fs_global_lock);
     err = vfs_lookup(kernB, &vn);
-    lock_release(fs_global_lock);
 
     kfree(kernB);
     if (err) return err;
 
     struct stat fileStat;
 
-    lock_acquire(fs_global_lock);
     err = VOP_STAT(vn, &fileStat);
-    lock_release(fs_global_lock);
 
     if (err)
     {
-        lock_acquire(fs_global_lock);
         vfs_close(vn);
-        lock_release(fs_global_lock);
         return err;
     }
     
     if ((fileStat.st_mode & S_IFDIR) == 0)
     {
-        lock_acquire(fs_global_lock);
         vfs_close(vn);
-        lock_release(fs_global_lock);
         return ENOTDIR;
     }
 
@@ -524,9 +472,7 @@ int sys_chdir(userptr_t pathName)
     curproc->p_cwd = vn;
     
     if (old_cwd != NULL) {
-        lock_acquire(fs_global_lock);
         vfs_close(old_cwd);
-        lock_release(fs_global_lock);
     }
 
     return 0;
@@ -546,9 +492,7 @@ int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal)
 
     uio_kinit(&iov, &ku, kBuffer, bufLen < CHUNK_SIZE ? bufLen : CHUNK_SIZE, 0, UIO_READ);
 
-    lock_acquire(fs_global_lock);
     result = vfs_getcwd(&ku);
-    lock_release(fs_global_lock);
 
     if (result) {
         kfree(kBuffer);

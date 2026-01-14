@@ -61,9 +61,6 @@
  */
 struct proc *kproc;
 
-/* Extern declaration for the Global Filesystem Lock */
-extern struct lock *fs_global_lock;
-
 /**
  * @brief The process table stuct stores an array of user processes, each identified by
  * a specific PID
@@ -164,10 +161,7 @@ static int console_init(const char *lock_name, struct proc *proc, int fd, int fl
     }
 
     /* LOCK: Protected Open */
-    /* Note: We assume fs_global_lock is initialized because proc_bootstrap runs first */
-    if (fs_global_lock) lock_acquire(fs_global_lock);
     int err = vfs_open(con, flag, 0644, &proc->fileTable[fd]->vn);
-    if (fs_global_lock) lock_release(fs_global_lock);
 
     kfree(con);
     if (err) {
@@ -181,9 +175,7 @@ static int console_init(const char *lock_name, struct proc *proc, int fd, int fl
     
     if (proc->fileTable[fd]->lockFile == NULL) {
         /* LOCK: Protected Close */
-        if (fs_global_lock) lock_acquire(fs_global_lock);
         vfs_close(proc->fileTable[fd]->vn);
-        if (fs_global_lock) lock_release(fs_global_lock);
 
         kfree(proc->fileTable[fd]);
         proc->fileTable[fd] = NULL; 
@@ -315,10 +307,7 @@ void proc_destroy(struct proc *proc)
     /* VFS fields */
     if (proc->p_cwd) {
         /* LOCK: Protected DECREF */
-        if (fs_global_lock){ 
-            lock_acquire(fs_global_lock);}
         VOP_DECREF(proc->p_cwd);
-        if (fs_global_lock) lock_release(fs_global_lock);
         proc->p_cwd = NULL;
     }
 
@@ -345,9 +334,7 @@ void proc_destroy(struct proc *proc)
             */
             if (is_last_ref) {
                 if (of->vn != NULL) {
-                    lock_acquire(fs_global_lock);
                     vfs_close(of->vn);
-                    lock_release(fs_global_lock);
                 }
                 lock_destroy(of->lockFile);
                 kfree(of);
@@ -394,12 +381,6 @@ void proc_bootstrap(void)
     processTable.is_active = true;
     processTable.last_pid = 0;
     for (int i = 0; i <= PROC_MAX; i++) processTable.proc[i] = NULL;
-
-    /* --- CRITICAL FIX: INITIALIZE GLOBAL LOCK HERE --- */
-    fs_global_lock = lock_create("fs_global_lock");
-    if (fs_global_lock == NULL) {
-        panic("proc_bootstrap: Could not create fs_global_lock\n");
-    }
 #endif
 
     kproc = proc_create("[kernel]");

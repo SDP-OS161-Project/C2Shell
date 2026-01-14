@@ -1,6 +1,8 @@
 #include <types.h>
 #include <vm.h>
 
+#include "opt-c2os.h"
+
 #define EXEC_MAX_PROC	1
 
 struct semaphore *exec_sem;

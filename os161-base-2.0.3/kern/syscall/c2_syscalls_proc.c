@@ -22,8 +22,6 @@
 #include <addrspace.h>
 #include "exec.h"
 
-extern struct lock *fs_global_lock;
-
 int sys_getpid(pid_t *retvalpid) 
 {
   //check that there is a current process running  
@@ -160,10 +158,7 @@ int sys_fork(struct trapframe *ctf, pid_t *retval)
         return ENOMEM;
     }
 
-    /* 2. Copy Address Space */
-    lock_acquire(fs_global_lock);
     err = as_copy(parent->p_addrspace, &child->p_addrspace);
-    lock_release(fs_global_lock);
     if (err) {
         proc_destroy(child);
         return err;
@@ -179,14 +174,12 @@ int sys_fork(struct trapframe *ctf, pid_t *retval)
 
     /* 4. Copy Current Working Directory (CWD) */
     /* We must do this manually since we stopped using proc_create_runprogram */
-    lock_acquire(fs_global_lock);
     spinlock_acquire(&parent->p_lock);
     if (parent->p_cwd != NULL) {
         VOP_INCREF(parent->p_cwd);
         child->p_cwd = parent->p_cwd;
     }
     spinlock_release(&parent->p_lock);
-    lock_release(fs_global_lock);
 
 
     /* 5. SHARE THE FILE TABLE (The Fix for the Crash) */
@@ -262,9 +255,7 @@ int sys_execv(const char *progname, char *argv[])
     }
 
     /* --- ADDED LOCK HERE: loadexec reads from disk --- */
-    lock_acquire(fs_global_lock);
     result = loadexec(kprog, &entrypoint, &stackptr);
-    lock_release(fs_global_lock);
     /* ------------------------------------------------ */
 
     kfree(kprog); 
