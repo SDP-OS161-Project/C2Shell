@@ -136,7 +136,7 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     for (int i = 3; i < OPEN_MAX; i++) {
         if (curproc->fileTable[i] == NULL) 
         {
-            curproc->fileTable[fd] = openF; // Claim it immediately
+            curproc->fileTable[i] = openF; // Claim it immediately
             fd = i;
             break;
         }
@@ -250,9 +250,9 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_READ);
 
         /* --- CRITICAL SECTION: HARDWARE ACCESS --- */
-        lock_acquire(fs_global_lock);
+        //lock_acquire(fs_global_lock);
         res = VOP_READ(fl->vn, &ku);
-        lock_release(fs_global_lock);
+        //lock_release(fs_global_lock);
         /* ----------------------------------------- */
 
         if (res) {
