@@ -28,7 +28,7 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal);
 
 int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal);
 
-int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal);
+int sys_lseek(int fd, off_t pos, int whence, int32_t *returnVal_low32, int32_t *returnVal_upp32);
 
 int sys_dup2(int oldFd, int newFd, int *returnVal);
 

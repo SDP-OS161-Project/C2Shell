@@ -186,8 +186,7 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     if (fd < 0 || fd >= OPEN_MAX) return EBADF;
     if (buffer == NULL) return EFAULT;
     
-    /* 2. Retrieve Openfile (Thread-Safe fetch not strictly needed here as table is per-proc, 
-       but standard to check NULL) */
+    /* 2. Retrieve Openfile */
     fl = curproc->fileTable[fd];
     if (fl == NULL) return EBADF;
     if (fl->vn == NULL) return EBADF;
@@ -204,7 +203,7 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     kBuffer = kmalloc(CHUNK_SIZE);
     if (kBuffer == NULL) return ENOMEM;
 
-    /* 5. Acquire File Lock (Protects 'offset' from other threads sharing this fd) */
+    /* 5. Acquire File Lock */
     lock_acquire(fl->lockFile);
 
     while (nRead < bufLen) 
@@ -215,9 +214,7 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
         /* Prepare UIO for Kernel Buffer */
         uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_READ);
 
-        /* --- CRITICAL SECTION: HARDWARE ACCESS --- */
         res = VOP_READ(fl->vn, &ku);
-        /* ----------------------------------------- */
 
         if (res) {
             lock_release(fl->lockFile);
@@ -291,7 +288,6 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 
         uio_kinit(&iov, &ku, kBuffer, nLen, fl->offset, UIO_WRITE);
 
-        /* LOCK: Critical section for hardware write */
 
         if (fl->openFlags & O_APPEND) 
         {
@@ -331,10 +327,10 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     return 0;
 }
 
-int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
+int sys_lseek(int fd, off_t pos, int whence, int32_t *retval_low32, int32_t *retval_upp32)
 {
     struct openfile *fl;
-    off_t newOff;
+    off_t retvalJoined = -1;
     struct stat st;
     int res;
 
@@ -346,31 +342,34 @@ int sys_lseek(int fd, off_t pos, int whence, off_t *returnVal)
     switch(whence)
     {
         case SEEK_SET:
-            newOff = pos;
+            if (pos < 0) return EINVAL;
+            retvalJoined = pos;
             break;
         case SEEK_CUR:
-            newOff = fl->offset + pos;
+            if (pos < 0 && -pos > fl->offset) return EINVAL;
+            retvalJoined = fl->offset + pos;
             break;
         case SEEK_END:
         {
-            /* LOCK: VOP_STAT touches disk */
             res = VOP_STAT(fl->vn,  &st);
 
             if(res) return res;
 
-            newOff = st.st_size + pos;
+            retvalJoined = st.st_size + pos;
             break;
         }
         default: return EINVAL;
     }
 
-    if(newOff < 0) return EINVAL;
+    if(retvalJoined < 0) return EINVAL;
 
     lock_acquire(fl->lockFile);
-    fl->offset = newOff;
+    fl->offset = retvalJoined;
     lock_release(fl->lockFile);
-    
-    *returnVal = newOff;
+
+    /* SET RETURN VALUES */
+    *retval_low32 = (int32_t)(retvalJoined >> 32);
+    *retval_upp32 = (int32_t)(retvalJoined & 0x00000000ffffffff);    
     return 0;
 }
 
@@ -445,7 +444,6 @@ int sys_chdir(userptr_t pathName)
         return err;
     }
 
-    /* LOCK: vfs_lookup touches disk */
     err = vfs_lookup(kernB, &vn);
 
     kfree(kernB);
@@ -502,7 +500,6 @@ int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal)
     /* Calculate how much data was written to kBuffer */
     size_t actualLen = (bufLen < CHUNK_SIZE ? bufLen : CHUNK_SIZE) - ku.uio_resid;
 
-    /* FIX: Now copy the path out to the user */
     result = copyout(kBuffer, buffer, actualLen);
     
     kfree(kBuffer);
@@ -527,10 +524,9 @@ int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal)
 int sys_remove(const char *pathname)
 {
 
-    /* NOT IMPLEMENTED (YET?) */
+    /* NOT IMPLEMENTED  */
     (void)pathname;
 
-    /* TASK COMPLETED SUCCESSFULLY */
     return 0;
 }
 

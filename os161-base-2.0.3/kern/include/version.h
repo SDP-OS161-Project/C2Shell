@@ -39,7 +39,7 @@
 /*
  * Change this as you see fit in the course of hacking the system.
  */
-#define GROUP_VERSION   "0"
+#define GROUP_VERSION   "1.0"
 
 
 #endif /* _VERSION_H_ */

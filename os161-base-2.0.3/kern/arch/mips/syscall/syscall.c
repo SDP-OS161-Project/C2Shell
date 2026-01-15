@@ -82,9 +82,10 @@ void
 syscall(struct trapframe *tf)
 {
 	int callno;
-	int32_t retval;
+	int32_t retval, retval_upp32;
 	int err;
-	off_t retval_64 = 0;
+	int whence;
+	off_t pos;
 
 	KASSERT(curthread != NULL);
 	KASSERT(curthread->t_curspl == 0);
@@ -131,28 +132,23 @@ syscall(struct trapframe *tf)
 			err = sys_write(tf->tf_a0, (userptr_t)tf->tf_a1, tf->tf_a2, (ssize_t *)&retval);
 			break;
 		case SYS_lseek:
-        {
-            int fd = tf->tf_a0;
-            
-            /* Align 64-bit argument: skip a1, join a2 and a3 */
-            /* (Assuming Big Endian MIPS) */
-            off_t pos = ((off_t)tf->tf_a2 << 32) | tf->tf_a3;
-            
-            /* Whence is on the stack, at sp+16 */
-            int whence;
-            copyin((const_userptr_t)(tf->tf_sp + 16), &whence, sizeof(int));
+			pos = tf->tf_a2;
+			pos <<= 32;
+			pos |= tf->tf_a3;
 
-            err = sys_lseek(fd, pos, whence, &retval_64); 
-            
-            if (!err) {
-                /* Split the 64-bit return value back into v0 and v1 */
-                /* Big Endian: v0 is High, v1 is Low */
-                tf->tf_v0 = (int)(retval_64 >> 32);
-                tf->tf_v1 = (int)(retval_64 & 0xFFFFFFFF);
+            err = copyin((const_userptr_t)(tf->tf_sp + 16), &whence, sizeof(int));
+            if (err) {
+                break;
             }
-        }
-        /* FIX 3: Break must be OUTSIDE the if(!err) block */
-        break;
+
+			err = sys_lseek(
+				(int)tf->tf_a0,
+				pos,
+				*(int32_t *)(tf->tf_sp + 16),
+				(int32_t *) &retval,
+				(int32_t *) &retval_upp32
+			);
+			break;
 		case SYS_dup2:
 			err = sys_dup2(tf->tf_a0, tf->tf_a1, &retval);
 			break;
@@ -205,6 +201,9 @@ syscall(struct trapframe *tf)
 	else {
 		/* Success. */
 		tf->tf_v0 = retval;
+#if OPT_C2OS		
+		tf->tf_v1 = retval_upp32;
+#endif
 		tf->tf_a3 = 0;      /* signal no error */
 	}
 
