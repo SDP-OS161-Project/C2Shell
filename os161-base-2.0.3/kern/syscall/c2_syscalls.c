@@ -25,6 +25,20 @@ struct openfile systemFileTable[SYSTEM_OPEN_MAX];
 
 #if OPT_C2OS
 
+/**
+ * @brief sys_open() opens the file, device, or other kernel object named by the pathname 
+ * provided. The flags argument specifies how to open the file. 
+ * 
+ * It copies the path from user space, opens the vnode, and creates a thread-safe 
+ * openfile structure. It sets access modes (RD/WR), handles O_APPEND by seeking 
+ * to the end, and atomically installs the file into the current process's file table.
+ * 
+ * @param pathName relative or absolute path of the file to open
+ * @param openFlags how to open the file
+ * @param modeFile permissions to use if creating a file
+ * @param returnVal pointer to store the new file descriptor
+ * @return zero on success, an error value in case of failure
+ */
 int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *returnVal) 
 {
     size_t len;
@@ -124,6 +138,18 @@ int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *return
     return 0;
 }
 
+
+/**
+ * @brief sys_close() closes the file handle fd.
+ *
+ *  It atomically removes the file entry from the process's file table and 
+ * decrements the reference count. If the reference count drops to zero 
+ * (meaning no other process or descriptor points to this open file), 
+ * it closes the underlying vnode and frees the memory.
+ * 
+ * @param fd file descriptor to close
+ * @return zero on success, an error value in case of failure 
+ */
 int sys_close(int fd)
 {
     struct openfile *f = NULL;
@@ -173,6 +199,22 @@ int sys_close(int fd)
     return 0;
 }
 
+
+/**
+ * @brief sys_read() reads up to bufLen bytes from the file specified by fd, at the 
+ * location in the file specified by the current seek position of the file, and 
+ * stores them in the space pointed to by buffer. The file must be open for reading.
+ * 
+ * It acquires the file lock to ensure atomic reads, reads data from disk 
+ * into a kernel buffer, and copies it to the user buffer. 
+ * The current seek position of the file is advanced by the number of bytes read.
+ *
+ * @param fd source file descriptor
+ * @param buffer destination buffer in user space
+ * @param bufLen number of bytes to be read
+ * @param returnVal pointer to store the actual number of bytes read
+ * @return zero on success, an error value in case of failure
+ */
 int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 {
     struct openfile *fl;
@@ -252,6 +294,22 @@ int sys_read(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     return 0;
 }
 
+
+/**
+ * @brief sys_write() writes up to bufLen bytes to the file specified by fd, 
+ * at the location in the file specified by the current seek position of the 
+ * file, taking the data from the space pointed to by buffer.
+ *
+ *  It acquires the file lock, copies data from the user buffer to a kernel buffer,
+ * and writes it to disk. If O_APPEND is set, it updates the offset to the 
+ * end of the file before every write.
+ * 
+ * @param fd destination file descriptor
+ * @param buffer source buffer in user space
+ * @param bufLen number of bytes to be written
+ * @param returnVal pointer to store the actual number of bytes written
+ * @return zero on success, an error value in case of failure
+ */
 int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
 {
     struct openfile *fl;
@@ -327,6 +385,22 @@ int sys_write(int fd, userptr_t buffer, size_t bufLen, ssize_t *returnVal)
     return 0;
 }
 
+
+/**
+ * @brief sys_lseek() alters the current seek position of the file handle fd, seeking 
+ * to a new position based on pos and whence.
+ * 
+ * It acquires the file lock to safely calculate and update the file offset.
+ * It splits the resulting 64-bit offset into two 32-bit values (low and high)
+ * to support the MIPS ABI return convention.
+ * 
+ * @param fd file handle
+ * @param pos signed quantity indicating the offset to add
+ * @param whence flag indicating the operation (SEEK_SET, SEEK_CUR, SEEK_END)
+ * @param retval_low32 pointer to store the new seek position (lower 32 bits)
+ * @param retval_upp32 pointer to store the new seek position (upper 32 bits)
+ * @return zero on success, an error value in case of failure
+ */
 int sys_lseek(int fd, off_t pos, int whence, int32_t *retval_low32, int32_t *retval_upp32)
 {
     struct openfile *fl;
@@ -389,6 +463,20 @@ int sys_lseek(int fd, off_t pos, int whence, int32_t *retval_low32, int32_t *ret
     return 0;
 }
 
+
+/**
+ * @brief sys_dup2() clones the file handle oldfd onto the file handle newfd. 
+ * If newfd names an open file, that file is closed first.
+ * 
+ * It increments the reference count of the file object to ensure it 
+ * persists until both descriptors are closed. The operation is thread-safe 
+ * using process locks.
+ * 
+ * @param oldfd existing file descriptor
+ * @param newfd new file descriptor to be created/overwritten
+ * @param retval pointer to store the new file descriptor
+ * @return zero on success, an error value in case of failure 
+ */
 int sys_dup2(int oldfd, int newfd, int *retval) {
     struct proc *p = curproc;
     struct openfile *old_of, *new_of_to_close = NULL;
@@ -442,6 +530,17 @@ int sys_dup2(int oldfd, int newfd, int *retval) {
     return 0;
 }
 
+
+/**
+ * @brief sys_chdir() changes the current working directory of the current process 
+ * to the directory named by pathName.
+ * 
+ * It performs a VFS lookup to find the corresponding vnode, verifies that 
+ * the vnode is a directory, and updates the process structure.
+ * 
+ * @param pathName directory to be set as current
+ * @return zero on success, an error value in case of failure
+ */
 int sys_chdir(userptr_t pathName)
 {
     size_t len;
@@ -492,6 +591,19 @@ int sys_chdir(userptr_t pathName)
     return 0;
 }
 
+
+/**
+ * @brief sys_getcwd() computes the name of the current directory and stores it in buffer.
+ * The length of data actually stored is returned in returnVal.
+ * 
+ * It allocates a kernel buffer, calls vfs_getcwd to retrieve the absolute path,
+ * and copies the result safely to the user-provided buffer.
+ * 
+ * @param buffer user buffer to store the result
+ * @param bufLen length of the buffer
+ * @param returnVal pointer to store the length of data actually written
+ * @return zero on success, an error value in case of failure 
+ */
 int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal)
 {
     int result;
@@ -528,14 +640,15 @@ int sys_getcwd(userptr_t buffer, size_t bufLen, int *returnVal)
     return 0;
 }
 
+
 /**
- * sys_remove - Remove a file from the filesystem.
- * @pathname: The path of the file to be removed.
+ * @brief sys_remove() removes the file referred to by pathname from the filesystem.
+ * 
+ * (Stub implementation)
+ * This function is currently a placeholder and returns success immediately.
  *
- * This function is a placeholder for the system call to remove a file.
- * Currently, it is not implemented and simply returns success.
- *
- * Return: Always returns 0 indicating success.
+ *  @param pathname path of the file to remove
+ * @return zero on success, an error value in case of failure
  */
 int sys_remove(const char *pathname)
 {
@@ -546,17 +659,16 @@ int sys_remove(const char *pathname)
     return 0;
 }
 
+
 /**
- * sys_fstat - Retrieves the status of an open file.
- *
- * @param fildes: The file descriptor of the file.
- * @param buf: Pointer to a stat structure to store the file status.
- *
- * @return: 0 on success, or an error code on failure.
- *
- * This function is a stub and currently does nothing. It is intended to retrieve
- * the status of the file associated with the file descriptor fildes and store it
- * in the stat structure pointed to by buf.
+ * @brief sys_fstat() retrieves the status of the file associated with the file descriptor.
+ * 
+ * (Stub implementation)
+ * This function is currently a placeholder and does not fill the stat structure.
+ * 
+ * @param fildes file descriptor
+ * @param buf pointer to a stat structure to store the info
+ * @return zero on success, an error value in case of failure
  */
 int sys_fstat(int fildes, struct stat *buf)
 {

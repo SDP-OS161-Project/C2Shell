@@ -123,12 +123,6 @@ int is_child(struct proc* proc, pid_t child_pid);
 
 struct proc *proc_search(pid_t pid);
 
-int find_valid_pid(void);
-
-int proc_add(pid_t pid, struct proc *proc);
-
-void proc_remove(pid_t pid);
-
 void call_enter_forked_process(void *tfv, unsigned long dummy);
 
 int add_new_child(struct proc* proc, pid_t child_pid);

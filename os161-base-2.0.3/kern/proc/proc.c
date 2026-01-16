@@ -75,49 +75,8 @@ static struct _processTable {
 } processTable;
 #endif
 
-/**
- * @brief Search in the process table a valid PID for an eventual
- * new process.
- * * @return PID on success, an error value in case of failure.
- */
+
 #if OPT_C2OS
-int find_valid_pid(void) {
-    int index = (processTable.last_pid + 1 > PROC_MAX) ? 1 : processTable.last_pid + 1;
-    while (index != processTable.last_pid) {
-        if (processTable.proc[index] == NULL) break;
-        index++;
-        index = (index > PROC_MAX) ? 1 : index;
-    }
-    if (index == processTable.last_pid) return -1; 
-    return index;
-}
-
-/**
- * @brief Add the given process to the process table, at the given index.
- * * @param pid index in the table (PID)
- * @param proc process to be added
- * * @return zero on success, an error value in case of failure
- */
-int proc_add(pid_t pid, struct proc *proc) {
-    if (pid <= 0 || pid > PROC_MAX+1 || proc == NULL) return -1;
-    spinlock_acquire(&processTable.lk);
-    processTable.proc[pid] = proc;
-    processTable.last_pid = pid;
-    spinlock_release(&processTable.lk);
-    return 0;
-}
-
-/**
- * @brief Remove the process associated to the given pid from the process 
- * table.
- * * @param pid pid of the process.
- */
-void proc_remove(pid_t pid) {
-    spinlock_acquire(&processTable.lk);
-    processTable.proc[pid] = NULL;
-    spinlock_release(&processTable.lk);
-}
-
 /**
  * @brief Starts the new generated thread
  * * @param tfv trapframe of the new thread.

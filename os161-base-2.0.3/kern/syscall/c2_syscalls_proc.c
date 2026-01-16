@@ -22,6 +22,15 @@
 #include <addrspace.h>
 #include "exec.h"
 
+
+/**
+ * @brief sys_getpid() retrieves the process ID of the current process.
+ * 
+ * It checks if a current process exists and stores its PID in the return value pointer.
+ * 
+ * @param retvalpid pointer to store the current process PID
+ * @return zero on success
+ */
 int sys_getpid(pid_t *retvalpid) 
 {
   //check that there is a current process running  
@@ -34,27 +43,23 @@ int sys_getpid(pid_t *retvalpid)
     return 0;   
 }
 
-/* Helper to remove child from list */
-void remove_child_node(struct proc *parent, pid_t child_pid) {
-    struct child_list *curr = parent->children_list;
-    struct child_list *prev = NULL;
-
-    while (curr != NULL) {
-        if (curr->child_pid == child_pid) {
-            if (prev == NULL) {
-                parent->children_list = curr->next_child;
-            } else {
-                prev->next_child = curr->next_child;
-            }
-            kfree(curr);
-            return;
-        }
-        prev = curr;
-        curr = curr->next_child;
-    }
-}
 
 #if OPT_C2OS
+/**
+ * @brief sys_waitpid() waits for a specific child process to change state.
+ * 
+ * It verifies that the specified PID is a valid child of the current process.
+ * It waits for the child to exit by sleeping on the process condition variable.
+ * If WNOHANG is specified, it returns immediately if the child is still running.
+ * Once the child exits, it retrieves the exit status, copies it to user space,
+ * removes the child from the parent's list, and destroys the child process structure.
+ * 
+ * @param pid the process ID of the child to wait for
+ * @param status pointer to an integer where the exit status will be stored
+ * @param options flags to control the wait behavior (e.g., WNOHANG)
+ * @param retval pointer to store the PID of the waited-for child
+ * @return zero on success, or an error code (ECHILD, EINVAL, ESRCH, EFAULT)
+ */
 int sys_waitpid(pid_t pid, int *status, int options, int32_t *retval) {
     int result;
 
@@ -114,7 +119,7 @@ int sys_waitpid(pid_t pid, int *status, int options, int32_t *retval) {
     *retval = pid;
     
     /* Remove from parent's child list */
-    remove_child_node(curproc, pid);
+    remove_child_from_list(curproc, pid);
     
     /* Finally, destroy the process structure (The Reaping) */
     proc_destroy(proc);
@@ -123,6 +128,16 @@ int sys_waitpid(pid_t pid, int *status, int options, int32_t *retval) {
 }
 #endif
 
+
+/**
+ * @brief sys_exit() terminates the current process.
+ * 
+ * It sets the process exit status using _MKWAIT_EXIT, signals the parent process
+ * (via the condition variable) that it has finished, and calls thread_exit() 
+ * to destroy the thread context. This function does not return.
+ * 
+ * @param exitcode the exit code to return to the parent process
+ */
 void sys_exit(int exitcode) {
     struct proc *p = curproc;
     
@@ -140,6 +155,19 @@ void sys_exit(int exitcode) {
     panic("sys_exit: Should not return");
 }
 
+
+/**
+ * @brief sys_fork() creates a new process by duplicating the current one.
+ * 
+ * It creates a new process structure and copies the address space and trapframe
+ * from the parent. It performs a shallow copy of the file table, incrementing 
+ * reference counts to share open files. It links the new process as a child 
+ * of the current process and creates a new thread to run the child.
+ * 
+ * @param ctf the trapframe of the current thread (to be copied to the child)
+ * @param retval pointer to store the PID of the new child process
+ * @return zero on success, or an error code (ENOMEM)
+ */
 int sys_fork(struct trapframe *ctf, pid_t *retval) 
 {
     struct proc *parent = curproc;
@@ -226,6 +254,19 @@ int sys_fork(struct trapframe *ctf, pid_t *retval)
     return 0;
 }
 
+
+/**
+ * @brief sys_execv() replaces the current process image with a new program.
+ * 
+ * It copies the program name and arguments from user space into kernel buffers.
+ * It destroys the old address space, loads the new executable from disk using loadexec(),
+ * and sets up the new user stack with the provided arguments. Finally, it enters 
+ * the new process context.
+ * 
+ * @param progname path to the executable program
+ * @param argv array of arguments to pass to the program
+ * @return does not return on success; returns an error code on failure
+ */
 int sys_execv(const char *progname, char *argv[]) 
 {
     KASSERT(curproc != NULL);
@@ -254,9 +295,7 @@ int sys_execv(const char *progname, char *argv[])
         return result;
     }
 
-    /* --- ADDED LOCK HERE: loadexec reads from disk --- */
     result = loadexec(kprog, &entrypoint, &stackptr);
-    /* ------------------------------------------------ */
 
     kfree(kprog); 
     if (result) {
