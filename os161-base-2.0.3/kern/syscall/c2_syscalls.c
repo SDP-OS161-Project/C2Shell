@@ -339,37 +339,53 @@ int sys_lseek(int fd, off_t pos, int whence, int32_t *retval_low32, int32_t *ret
     if(fl == NULL) return EBADF;
     if (!VOP_ISSEEKABLE(fl->vn)) return ESPIPE;
 
+    lock_acquire(fl->lockFile);
     switch(whence)
     {
         case SEEK_SET:
-            if (pos < 0) return EINVAL;
+            if (pos < 0) {
+                lock_release(fl->lockFile);
+                return EINVAL;
+            }
             retvalJoined = pos;
             break;
         case SEEK_CUR:
-            if (pos < 0 && -pos > fl->offset) return EINVAL;
+            if (pos < 0 && -pos > fl->offset) {
+                lock_release(fl->lockFile);
+                return EINVAL;
+            }
             retvalJoined = fl->offset + pos;
             break;
         case SEEK_END:
         {
             res = VOP_STAT(fl->vn,  &st);
 
-            if(res) return res;
+            if(res) {
+                lock_release(fl->lockFile);
+                return res;
+            }
 
             retvalJoined = st.st_size + pos;
             break;
         }
-        default: return EINVAL;
+        default: 
+        {
+            lock_release(fl->lockFile);
+            return EINVAL;
+        }
     }
 
-    if(retvalJoined < 0) return EINVAL;
-
-    lock_acquire(fl->lockFile);
+    if(retvalJoined < 0) {
+        lock_release(fl->lockFile); // Unlock on error
+        return EINVAL;
+    }
+    
     fl->offset = retvalJoined;
     lock_release(fl->lockFile);
 
     /* SET RETURN VALUES */
-    *retval_low32 = (int32_t)(retvalJoined >> 32);
-    *retval_upp32 = (int32_t)(retvalJoined & 0x00000000ffffffff);    
+    *retval_upp32 = (int32_t)(retvalJoined >> 32);
+    *retval_low32 = (int32_t)(retvalJoined & 0x00000000ffffffff);    
     return 0;
 }
 

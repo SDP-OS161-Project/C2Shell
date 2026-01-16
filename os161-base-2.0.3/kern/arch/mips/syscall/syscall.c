@@ -144,7 +144,7 @@ syscall(struct trapframe *tf)
 			err = sys_lseek(
 				(int)tf->tf_a0,
 				pos,
-				*(int32_t *)(tf->tf_sp + 16),
+				whence,
 				(int32_t *) &retval,
 				(int32_t *) &retval_upp32
 			);
@@ -202,7 +202,10 @@ syscall(struct trapframe *tf)
 		/* Success. */
 		tf->tf_v0 = retval;
 #if OPT_C2OS		
-		tf->tf_v1 = retval_upp32;
+	if (callno == SYS_lseek) {
+             tf->tf_v0 = retval_upp32; // lseek High bits
+             tf->tf_v1 = retval;       // lseek Low bits
+        }
 #endif
 		tf->tf_a3 = 0;      /* signal no error */
 	}
