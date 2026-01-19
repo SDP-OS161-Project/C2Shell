@@ -160,14 +160,19 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
 	struct uio ku;
 	struct addrspace *as;
 
-	as = proc_getas();
+    if (v == NULL) {
+        panic("load_elf: vnode is NULL! usage error");
+    }
 
-	/*
-	 * Read the executable header from offset 0 in the file.
-	 */
+    as = proc_getas();
+    
+    if (as == NULL) {
+         panic("load_elf: current address space is NULL!");
+    }
 
-	uio_kinit(&iov, &ku, &eh, sizeof(eh), 0, UIO_READ);
-	result = VOP_READ(v, &ku);
+    uio_kinit(&iov, &ku, &eh, sizeof(eh), 0, UIO_READ);
+    
+    result = VOP_READ(v, &ku);
 	if (result) {
 		return result;
 	}

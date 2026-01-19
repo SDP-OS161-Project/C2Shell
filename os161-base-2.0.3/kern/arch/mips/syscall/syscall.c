@@ -35,6 +35,9 @@
 #include <thread.h>
 #include <current.h>
 #include <syscall.h>
+#include <addrspace.h>
+#include <copyinout.h>
+#include "kern/c2_syscall.h"
 
 
 /*
@@ -79,8 +82,10 @@ void
 syscall(struct trapframe *tf)
 {
 	int callno;
-	int32_t retval;
+	int32_t retval, retval_upp32;
 	int err;
+	int whence;
+	off_t pos;
 
 	KASSERT(curthread != NULL);
 	KASSERT(curthread->t_curspl == 0);
@@ -110,6 +115,72 @@ syscall(struct trapframe *tf)
 		break;
 
 	    /* Add stuff here */
+#if OPT_C2OS
+		case SYS_fork:
+			err = sys_fork(tf, (pid_t *) &retval);
+			break;
+		case SYS_open:
+			err = sys_open((userptr_t)tf->tf_a0, tf->tf_a1, tf->tf_a2, &retval);
+			break;
+		case SYS_close:
+			err = sys_close(tf->tf_a0);
+			break;
+		case SYS_read:
+			err = sys_read(tf->tf_a0, (userptr_t)tf->tf_a1, tf->tf_a2, (ssize_t *)&retval);
+			break;
+		case SYS_write:
+			err = sys_write(tf->tf_a0, (userptr_t)tf->tf_a1, tf->tf_a2, (ssize_t *)&retval);
+			break;
+		case SYS_lseek:
+			pos = tf->tf_a2;
+			pos <<= 32;
+			pos |= tf->tf_a3;
+
+            err = copyin((const_userptr_t)(tf->tf_sp + 16), &whence, sizeof(int));
+            if (err) {
+                break;
+            }
+
+			err = sys_lseek(
+				(int)tf->tf_a0,
+				pos,
+				whence,
+				(int32_t *) &retval,
+				(int32_t *) &retval_upp32
+			);
+			break;
+		case SYS_dup2:
+			err = sys_dup2(tf->tf_a0, tf->tf_a1, &retval);
+			break;
+		case SYS_chdir:
+			err = sys_chdir((userptr_t)tf->tf_a0);
+			break;
+		case SYS___getcwd:
+			err = sys_getcwd((userptr_t)tf->tf_a0, tf->tf_a1, &retval);
+			break;
+        case SYS_execv:
+            err = sys_execv((char *)tf->tf_a0, (char **)tf->tf_a1);
+            break;
+        case SYS_waitpid:
+            err = sys_waitpid((pid_t)tf->tf_a0, (int *)tf->tf_a1, (int)tf->tf_a2, (pid_t *)&retval);
+            break;
+        case SYS_getpid:
+            err = sys_getpid((pid_t *)&retval);
+            break;
+		case SYS__exit:
+			sys_exit((int) tf->tf_a0);
+			err = 0;		
+			break;
+
+
+		/* Void syscalls added for testing purposes */
+		case SYS_fstat:
+			err = sys_fstat((int)tf->tf_a0, (struct stat *)tf->tf_a1);
+			break;
+		case SYS_remove:
+			err = sys_remove((const char *)tf->tf_a0);
+			break;
+#endif
 
 	    default:
 		kprintf("Unknown syscall %d\n", callno);
@@ -130,6 +201,12 @@ syscall(struct trapframe *tf)
 	else {
 		/* Success. */
 		tf->tf_v0 = retval;
+#if OPT_C2OS		
+	if (callno == SYS_lseek) {
+             tf->tf_v0 = retval_upp32; // lseek High bits
+             tf->tf_v1 = retval;       // lseek Low bits
+        }
+#endif
 		tf->tf_a3 = 0;      /* signal no error */
 	}
 
@@ -157,5 +234,18 @@ syscall(struct trapframe *tf)
 void
 enter_forked_process(struct trapframe *tf)
 {
+	#if OPT_C2OS
+
+	struct trapframe forkedTf = *(struct trapframe *)tf;
+	kfree(tf); /* Free the data */
+
+	forkedTf.tf_v0 = 0; 	// return value is 0
+    forkedTf.tf_a3 = 0; 	// return with success
+	forkedTf.tf_epc += 4; 	// return to next instruction
+
+	as_activate();
+	mips_usermode(&forkedTf);
+  #else
 	(void)tf;
+  #endif
 }

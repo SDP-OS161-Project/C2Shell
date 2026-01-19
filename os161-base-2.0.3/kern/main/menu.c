@@ -46,6 +46,11 @@
 #include "opt-sfs.h"
 #include "opt-net.h"
 
+
+#include "opt-c2os.h"
+#include "kern/c2_syscall.h"
+#include <current.h>
+
 /*
  * In-kernel menu and command dispatcher.
  */
@@ -114,31 +119,58 @@ static
 int
 common_prog(int nargs, char **args)
 {
-	struct proc *proc;
-	int result;
+    struct proc *proc;
+    int result;
 
-	/* Create a process for the new program to run in. */
-	proc = proc_create_runprogram(args[0] /* name */);
-	if (proc == NULL) {
-		return ENOMEM;
-	}
+    /* Create a process for the new program to run in. */
+    proc = proc_create_runprogram(args[0] /* name */);
+    if (proc == NULL) {
+        return ENOMEM;
+    }
 
-	result = thread_fork(args[0] /* thread name */,
-			proc /* new process */,
-			cmd_progthread /* thread function */,
-			args /* thread arg */, nargs /* thread arg */);
-	if (result) {
-		kprintf("thread_fork failed: %s\n", strerror(result));
-		proc_destroy(proc);
-		return result;
-	}
+#if OPT_C2OS
+    /* ADDING NEW CHILD TO FATHER */
+    if (add_new_child(curproc, proc->p_pid) == -1) {
+        proc_destroy(proc);
+        return ENOMEM; 
+    }
 
-	/*
-	 * The new process will be destroyed when the program exits...
-	 * once you write the code for handling that.
-	 */
+    /* LINKING CHILD TO FATHER */
+    proc->parent_pid = curproc->p_pid;
+#endif
 
-	return 0;
+    /* Start the process */
+    result = thread_fork(args[0] /* thread name */,
+            proc /* new process */,
+            cmd_progthread /* thread function */,
+            args /* thread arg */, nargs /* thread arg */);
+    if (result) {
+        kprintf("thread_fork failed: %s\n", strerror(result));
+        proc_destroy(proc);
+        return result;
+    }
+
+#if OPT_C2OS
+    /* --- MANUAL KERNEL WAIT LOOP --- */
+    /* Use internal locks/cv instead of sys_waitpid for kernel threads */
+    
+    lock_acquire(proc->p_locklock);
+    while (proc->p_numthreads > 0) {
+        cv_wait(proc->p_cv, proc->p_locklock);
+    }
+    lock_release(proc->p_locklock);
+
+    /* Retrieve status for printing */
+    int exitstatus = proc->p_status;
+    pid_t pid = proc->p_pid;
+
+    kprintf("[!] process %d terminated with exit status %d\n", pid, exitstatus);
+
+    /* Now it is safe to destroy the process structure */
+    proc_destroy(proc);
+#endif
+
+    return 0;
 }
 
 /*
@@ -818,6 +850,21 @@ menu(char *args)
 	char buf[64];
 
 	menu_execute(args, 1);
+
+#if OPT_C2OS
+    kprintf("\n");
+	kprintf("\n");
+	kprintf("[!] Project c2: SHELL\n");
+	kprintf("    ------------------------\n");
+	kprintf("    Academic Year: 2024/2025\n");
+	kprintf("    Authors:                \n");
+	kprintf("                   Dimitrievska Milica   \n");
+	kprintf("                   Piasso Marco   \n");
+	kprintf("                   Scanu Riccardo   \n");
+	kprintf("\n");
+	kprintf("\n");
+	kprintf("\n");
+#endif
 
 	while (1) {
 		kprintf("OS/161 kernel [? for menu]: ");

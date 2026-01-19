@@ -37,10 +37,20 @@
  */
 
 #include <spinlock.h>
+#include <kern/c2_syscall.h>
+#include <limits.h>
+
 
 struct addrspace;
 struct thread;
 struct vnode;
+
+#if OPT_C2OS
+struct child_list {
+	pid_t child_pid;
+	struct child_list* next_child;
+  };
+#endif
 
 /*
  * Process structure.
@@ -71,6 +81,15 @@ struct proc {
 	struct vnode *p_cwd;		/* current working directory */
 
 	/* add more material here as needed */
+#if OPT_C2OS
+    int p_status;
+	pid_t p_pid;
+	pid_t parent_pid;			
+	struct child_list* children_list; 
+	struct cv *p_cv;			
+	struct lock *p_locklock;
+	struct openfile *fileTable[OPEN_MAX];
+#endif
 };
 
 /* This is the process structure for the kernel and for kernel-only threads. */
@@ -78,6 +97,8 @@ extern struct proc *kproc;
 
 /* Call once during system startup to allocate data structures. */
 void proc_bootstrap(void);
+
+struct proc *proc_create(const char *name);
 
 /* Create a fresh process for use by runprogram(). */
 struct proc *proc_create_runprogram(const char *name);
@@ -96,6 +117,21 @@ struct addrspace *proc_getas(void);
 
 /* Change the address space of the current process, and return the old one. */
 struct addrspace *proc_setas(struct addrspace *);
+
+#if OPT_C2OS
+int is_child(struct proc* proc, pid_t child_pid);
+
+struct proc *proc_search(pid_t pid);
+
+void call_enter_forked_process(void *tfv, unsigned long dummy);
+
+int add_new_child(struct proc* proc, pid_t child_pid);
+
+int destroy_child_list(struct proc* proc);
+
+int remove_child_from_list(struct proc* proc, pid_t child_pid);
+
+#endif
 
 
 #endif /* _PROC_H_ */

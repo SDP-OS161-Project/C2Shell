@@ -64,10 +64,66 @@
  */
 static struct spinlock stealmem_lock = SPINLOCK_INITIALIZER;
 
+#if OPT_C2OS
+static struct spinlock freemem_lock = SPINLOCK_INITIALIZER;
+#endif
+
+#if OPT_C2OS
+/* Number of ram pages at bootstrap */
+static int nRamPages = 0;
+/* Bitmap storing the position of the free pages, null at bootstrap */
+static unsigned int *bitmapFreePages = NULL;
+/* Bitmap storing the size of the free pages */
+static unsigned long *bitmapSizePages = NULL;
+/* Flag that signals if the table is active */
+static bool allocationTableActive = false;
+#endif
+
+#if OPT_C2OS
+static bool isTableActive(void){
+	spinlock_acquire(&freemem_lock);
+	bool isActive = allocationTableActive;
+	spinlock_release(&freemem_lock);
+	return isActive;
+}
+#endif
+
+/**
+ * @brief Initialize allocation table 
+*/
 void
 vm_bootstrap(void)
 {
-	/* Do nothing. */
+#if OPT_C2OS
+
+	/* Computes the number of pages that can be assigned */
+	nRamPages = ((int) ram_getsize() / PAGE_SIZE);
+
+	/* Allocates the bitmap */
+	bitmapFreePages = (unsigned int *) kmalloc(nRamPages * sizeof(unsigned int));
+	bitmapSizePages = (unsigned long *) kmalloc(nRamPages * sizeof(unsigned long));
+
+	/* Check if the requested memory is available and has been allocated */
+	if(bitmapFreePages == NULL){
+		panic("vm_bootsrap: Unable to allocate ram pages");
+	}
+	if(bitmapSizePages == NULL){
+		panic("vm_bootsrap: Unable to allocate page size");
+	}
+
+	/* Initializing bitmap */
+	for(int i = 0; i < nRamPages; i++){
+		bitmapFreePages[i] = 0;
+		bitmapSizePages[i] = 0;
+	}
+
+	/* Signaling that the table is ready */
+	spinlock_acquire(&freemem_lock);
+	allocationTableActive = true;
+	spinlock_release(&freemem_lock);
+
+	return;
+#endif
 }
 
 /*
@@ -90,19 +146,130 @@ dumbvm_can_sleep(void)
 	}
 }
 
-static
-paddr_t
-getppages(unsigned long npages)
-{
-	paddr_t addr;
 
-	spinlock_acquire(&stealmem_lock);
+/**
+ * @brief Returns the physical address of the memory based on a
+ * 			 bitmap-allocation strategy, modifying the needed data structures
+ * @param npages number of pages requested
+ * @return paddr_t the physical address
+*/
+#if OPT_C2OS
+static paddr_t getfreeppages(unsigned long npages){
+	paddr_t addr = 0;
 
-	addr = ram_stealmem(npages);
+	/* Checks if table is active */
+	if(!isTableActive()){
+		return 0;
+	}																																														
 
-	spinlock_release(&stealmem_lock);
+	spinlock_acquire(&freemem_lock);
+
+	long int tmpAddr = -1;
+	long int startAddr = -1;
+
+	for (long int i = 0; i < nRamPages; i++) {
+		/* Check position */
+		if (bitmapFreePages[i]) {
+			/* Checks the start of the map*/
+			if (i == 0 || bitmapFreePages[i-1] == 0) {
+				tmpAddr = i;
+			}
+			/* Checks if it's enough */
+			if (i - tmpAddr + 1 >= (long int)npages) {
+				startAddr = tmpAddr;
+				break;
+			}
+		}
+	}
+	/* Checks if the space is availbale */
+	if (startAddr != -1) {
+		for (long int i = startAddr; i < startAddr + (long int)npages; i++) {
+			bitmapFreePages[i] = 0;				/* Updating positions bitmap */
+		}
+		bitmapSizePages[startAddr] = npages;		/* Updating dimensions bitmap */
+		addr = (paddr_t) startAddr * PAGE_SIZE; 
+	} else {
+		addr = 0;
+	}
+
+	/* Free spinlock */
+	spinlock_release(&freemem_lock);
+
 	return addr;
 }
+#endif
+
+/**
+ * @brief retrieves a valid address in which space in memory starts, based on the amount 
+ * 		  of pages (unsigned long npages) required by the process
+ * @param npages number of pages required by the process
+ * @return paddr_t a valid address
+ */
+static paddr_t getppages(unsigned long npages) {
+#if OPT_C2OS
+
+	/* Get the physical address of the pages */
+	paddr_t addr = getfreeppages(npages);
+
+#else
+
+	paddr_t addr = 0;
+
+#endif
+
+	if (addr == 0) {
+		/* No free pages found */
+		spinlock_acquire(&stealmem_lock);
+		addr = ram_stealmem(npages);						
+		spinlock_release(&stealmem_lock);
+	}
+
+#if OPT_C2OS
+
+	if (addr != 0 && isTableActive()) {
+		/* Updating bitmap */
+		spinlock_acquire(&freemem_lock);
+		bitmapSizePages[addr/PAGE_SIZE] = npages;				/* Allocating virtual space */
+		spinlock_release(&freemem_lock);
+	}
+
+#endif
+
+	return addr;
+}
+
+/**
+ * @brief set to 1 the specific position of the bitmapFreePages data structure, in order to 
+ * 		  indicates that those pages are free to be used from now on.
+ * 
+ * @param paddr starting address of the memory to release
+ * @param size number of pages
+ */
+#if OPT_C2OS
+static void freeppages(paddr_t paddr, unsigned long size) {
+
+	/* Checks if the table is active */
+	if (!isTableActive()) {
+		return;
+	}
+
+	/* Computes the physical address */
+	unsigned long startAddr = paddr/PAGE_SIZE;
+
+	/* Gets lock on memory */
+	spinlock_acquire(&freemem_lock);
+
+	/* Frees the pages */
+	for (unsigned long i = startAddr; i < startAddr + size; i++) {
+		bitmapFreePages[i] = 1;
+	}
+
+	/* Releases teh lock */
+	spinlock_release(&freemem_lock);
+
+	return;
+}
+#endif
 
 /* Allocate/free some kernel-space virtual pages */
 vaddr_t
@@ -118,12 +285,30 @@ alloc_kpages(unsigned npages)
 	return PADDR_TO_KVADDR(pa);
 }
 
-void
-free_kpages(vaddr_t addr)
-{
-	/* nothing - leak the memory. */
 
-	(void)addr;
+/**
+ * @brief releases memory starting from the given address based on the size stored in the map
+ * 
+ * @param addr starting address
+*/
+void free_kpages(vaddr_t addr) {
+#if OPT_C2OS
+	/* Checks if table is active */
+	if (isTableActive()) {
+
+		/* Computes physical address */
+		paddr_t paddr = addr - MIPS_KSEG0;
+		long int startAddr = paddr/PAGE_SIZE;
+
+		/* FREEING THE PAGES */
+		freeppages(paddr, bitmapSizePages[startAddr]);
+
+	} else {
+		(void) addr;
+	}
+#else
+	(void) addr;
+#endif
 }
 
 void
@@ -146,6 +331,10 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 	faultaddress &= PAGE_FRAME;
 
 	DEBUG(DB_VM, "dumbvm: fault: 0x%x\n", faultaddress);
+
+	if (curproc == NULL || curproc->p_addrspace == NULL) {
+    	return EFAULT;
+	}
 
 	switch (faulttype) {
 	    case VM_FAULT_READONLY:
@@ -256,8 +445,23 @@ as_create(void)
 void
 as_destroy(struct addrspace *as)
 {
-	dumbvm_can_sleep();
-	kfree(as);
+    dumbvm_can_sleep();
+
+#if OPT_C2OS
+    if (as) {
+        if (as->as_pbase1) {
+            freeppages(as->as_pbase1, as->as_npages1);
+        }
+        if (as->as_pbase2) {
+            freeppages(as->as_pbase2, as->as_npages2);
+        }
+        if (as->as_stackpbase) {
+            freeppages(as->as_stackpbase, DUMBVM_STACKPAGES);
+        }
+	}
+#endif
+
+    kfree(as);
 }
 
 void

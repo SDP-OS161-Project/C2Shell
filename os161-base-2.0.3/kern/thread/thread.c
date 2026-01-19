@@ -786,8 +786,11 @@ thread_exit(void)
 	 * Detach from our process. You might need to move this action
 	 * around, depending on how your wait/exit works.
 	 */
+#if OPT_C2OS
+	if (cur->t_proc != NULL) proc_remthread(cur);
+#else
 	proc_remthread(cur);
-
+#endif
 	/* Make sure we *are* detached (move this only if you're sure!) */
 	KASSERT(cur->t_proc == NULL);
 
