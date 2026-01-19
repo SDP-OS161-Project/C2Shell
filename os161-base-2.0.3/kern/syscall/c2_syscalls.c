@@ -23,7 +23,7 @@
 
 struct openfile systemFileTable[SYSTEM_OPEN_MAX];
 
-#if OPT_C2OS
+#if OPT_SHELL
 
 /**
  * @brief sys_open() opens the file, device, or other kernel object named by the pathname 

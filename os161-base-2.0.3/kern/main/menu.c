@@ -47,7 +47,7 @@
 #include "opt-net.h"
 
 
-#include "opt-c2os.h"
+#include "opt-shell.h"
 #include "kern/c2_syscall.h"
 #include <current.h>
 
@@ -128,7 +128,7 @@ common_prog(int nargs, char **args)
         return ENOMEM;
     }
 
-#if OPT_C2OS
+#if OPT_SHELL
     /* ADDING NEW CHILD TO FATHER */
     if (add_new_child(curproc, proc->p_pid) == -1) {
         proc_destroy(proc);
@@ -150,7 +150,7 @@ common_prog(int nargs, char **args)
         return result;
     }
 
-#if OPT_C2OS
+#if OPT_SHELL
     /* --- MANUAL KERNEL WAIT LOOP --- */
     /* Use internal locks/cv instead of sys_waitpid for kernel threads */
     
@@ -851,7 +851,7 @@ menu(char *args)
 
 	menu_execute(args, 1);
 
-#if OPT_C2OS
+#if OPT_SHELL
     kprintf("\n");
 	kprintf("\n");
 	kprintf("[!] Project c2: SHELL\n");

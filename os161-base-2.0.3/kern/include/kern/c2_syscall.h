@@ -5,7 +5,7 @@
 #include <lib.h>
 #include <stat.h>
 #include <mips/trapframe.h>
-#include "opt-c2os.h"
+#include "opt-shell.h"
 
 struct openfile {
     struct vnode *vn;
@@ -18,7 +18,7 @@ struct openfile {
 
 struct proc;
 
-#if OPT_C2OS
+#if OPT_SHELL
 
 int sys_open(userptr_t pathName, int openFlags, mode_t modeFile, int32_t *returnVal);
 

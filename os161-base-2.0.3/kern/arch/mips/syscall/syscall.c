@@ -82,10 +82,15 @@ void
 syscall(struct trapframe *tf)
 {
 	int callno;
-	int32_t retval, retval_upp32;
+	int32_t retval;
 	int err;
-	int whence;
-	off_t pos;
+
+
+#if OPT_SHELL
+    int32_t retval_upp32 = 0;
+    int whence;
+    off_t pos;
+#endif
 
 	KASSERT(curthread != NULL);
 	KASSERT(curthread->t_curspl == 0);
@@ -115,7 +120,7 @@ syscall(struct trapframe *tf)
 		break;
 
 	    /* Add stuff here */
-#if OPT_C2OS
+#if OPT_SHELL
 		case SYS_fork:
 			err = sys_fork(tf, (pid_t *) &retval);
 			break;
@@ -201,7 +206,7 @@ syscall(struct trapframe *tf)
 	else {
 		/* Success. */
 		tf->tf_v0 = retval;
-#if OPT_C2OS		
+#if OPT_SHELL		
 	if (callno == SYS_lseek) {
              tf->tf_v0 = retval_upp32; // lseek High bits
              tf->tf_v1 = retval;       // lseek Low bits
@@ -234,7 +239,7 @@ syscall(struct trapframe *tf)
 void
 enter_forked_process(struct trapframe *tf)
 {
-	#if OPT_C2OS
+	#if OPT_SHELL
 
 	struct trapframe forkedTf = *(struct trapframe *)tf;
 	kfree(tf); /* Free the data */

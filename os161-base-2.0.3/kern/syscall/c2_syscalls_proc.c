@@ -44,7 +44,7 @@ int sys_getpid(pid_t *retvalpid)
 }
 
 
-#if OPT_C2OS
+#if OPT_SHELL
 /**
  * @brief sys_waitpid() waits for a specific child process to change state.
  * 

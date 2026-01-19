@@ -65,7 +65,7 @@ struct proc *kproc;
  * @brief The process table stuct stores an array of user processes, each identified by
  * a specific PID
  */
-#if OPT_C2OS
+#if OPT_SHELL
 #define PROC_MAX 100                /* maximum number of allowed running process    */
 static struct _processTable {
     bool is_active;                 /* table is active and ready to use             */
@@ -76,7 +76,7 @@ static struct _processTable {
 #endif
 
 
-#if OPT_C2OS
+#if OPT_SHELL
 /**
  * @brief Starts the new generated thread
  * * @param tfv trapframe of the new thread.
@@ -221,7 +221,7 @@ struct proc *proc_create(const char *name)
     proc->p_addrspace = NULL;
     proc->p_cwd = NULL;
 
-#if OPT_C2OS
+#if OPT_SHELL
     proc->children_list = NULL;
     proc->p_status = 0;
     proc->parent_pid = -1;
@@ -270,7 +270,7 @@ void proc_destroy(struct proc *proc)
         proc->p_cwd = NULL;
     }
 
-#if OPT_C2OS
+#if OPT_SHELL
     /* Clean up the File Table with thread safety */
     /* In proc_destroy */
     for (int i = 0; i < OPEN_MAX; i++) {
@@ -320,7 +320,7 @@ void proc_destroy(struct proc *proc)
     KASSERT(proc->p_numthreads == 0);
     spinlock_cleanup(&proc->p_lock);
 
-#if OPT_C2OS
+#if OPT_SHELL
     if (proc_deinit(proc) != 0) {
         panic("[ERROR] some errors occurred in the management of the process table\n");
     }
@@ -335,7 +335,7 @@ void proc_destroy(struct proc *proc)
  */
 void proc_bootstrap(void)
 {
-#if OPT_C2OS
+#if OPT_SHELL
     spinlock_init(&processTable.lk);
     processTable.is_active = true;
     processTable.last_pid = 0;
@@ -345,7 +345,7 @@ void proc_bootstrap(void)
     kproc = proc_create("[kernel]");
     if (kproc == NULL) panic("proc_create for kproc failed\n");
 
-#if OPT_C2OS
+#if OPT_SHELL
     processTable.proc[0] = kproc;
     kproc->p_pid = 0; 
 #endif
@@ -365,7 +365,7 @@ struct proc *proc_create_runprogram(const char *name)
 
     newproc->p_addrspace = NULL;
 
-#if OPT_C2OS
+#if OPT_SHELL
     if (console_init("STDIN", newproc, 0, O_RDONLY) == -1) return NULL;
     if (console_init("STDOUT", newproc, 1, O_WRONLY) == -1) return NULL;
     if (console_init("STDERR", newproc, 2, O_WRONLY) == -1) return NULL;
@@ -425,7 +425,7 @@ void proc_remthread(struct thread *t)
     proc->p_numthreads--;
     spinlock_release(&proc->p_lock);
 
-#if OPT_C2OS
+#if OPT_SHELL
     if (proc->p_cv != NULL && proc->p_locklock != NULL) {
         lock_acquire(proc->p_locklock);
         cv_broadcast(proc->p_cv, proc->p_locklock);
@@ -479,7 +479,7 @@ struct addrspace *proc_setas(struct addrspace *newas)
 /*
  * Adds a new child to the children list. If It is not possible, it returns -1, otherwise 0.
  */
-#if OPT_C2OS
+#if OPT_SHELL
 int add_new_child(struct proc* proc, pid_t child_pid){
     struct child_list* app=proc->children_list;
 
@@ -506,7 +506,7 @@ int add_new_child(struct proc* proc, pid_t child_pid){
  * Sets the childrens's parent pid to -1, the "root" process.
  * If It is not possible, it returns -1, otherwise 0.
  */
-#if OPT_C2OS
+#if OPT_SHELL
 int destroy_child_list(struct proc* proc){
     struct child_list* app=proc->children_list;
     struct proc* child_proc;
@@ -527,7 +527,7 @@ int destroy_child_list(struct proc* proc){
  * Removes the child (which is being destroyed) from the child list of its parent process.
  * If It is not possible, it returns -1, otherwise 0.
  */
-#if OPT_C2OS
+#if OPT_SHELL
 int remove_child_from_list(struct proc* proc, pid_t child_pid){
     struct child_list* app=proc->children_list;
     struct child_list* prev_child=NULL;
@@ -552,7 +552,7 @@ int remove_child_from_list(struct proc* proc, pid_t child_pid){
  * Checks if the process with pid child_pid is a son of the parent process
  * If It is not a child, it returns -1, otherwise 0.
  */
-#if OPT_C2OS
+#if OPT_SHELL
 int is_child(struct proc* proc, pid_t child_pid){
     struct child_list* app=proc->children_list;
     while(app!=NULL){

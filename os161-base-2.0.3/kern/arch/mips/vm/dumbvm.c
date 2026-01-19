@@ -38,6 +38,7 @@
 #include <mips/tlb.h>
 #include <addrspace.h>
 #include <vm.h>
+#include "opt-shell.h"
 
 /*
  * Dumb MIPS-only "VM system" that is intended to only be just barely
@@ -64,11 +65,11 @@
  */
 static struct spinlock stealmem_lock = SPINLOCK_INITIALIZER;
 
-#if OPT_C2OS
+#if OPT_SHELL
 static struct spinlock freemem_lock = SPINLOCK_INITIALIZER;
 #endif
 
-#if OPT_C2OS
+#if OPT_SHELL
 /* Number of ram pages at bootstrap */
 static int nRamPages = 0;
 /* Bitmap storing the position of the free pages, null at bootstrap */
@@ -79,7 +80,7 @@ static unsigned long *bitmapSizePages = NULL;
 static bool allocationTableActive = false;
 #endif
 
-#if OPT_C2OS
+#if OPT_SHELL
 static bool isTableActive(void){
 	spinlock_acquire(&freemem_lock);
 	bool isActive = allocationTableActive;
@@ -94,7 +95,7 @@ static bool isTableActive(void){
 void
 vm_bootstrap(void)
 {
-#if OPT_C2OS
+#if OPT_SHELL
 
 	/* Computes the number of pages that can be assigned */
 	nRamPages = ((int) ram_getsize() / PAGE_SIZE);
@@ -153,7 +154,7 @@ dumbvm_can_sleep(void)
  * @param npages number of pages requested
  * @return paddr_t the physical address
 */
-#if OPT_C2OS
+#if OPT_SHELL
 static paddr_t getfreeppages(unsigned long npages){
 	paddr_t addr = 0;
 
@@ -206,7 +207,7 @@ static paddr_t getfreeppages(unsigned long npages){
  * @return paddr_t a valid address
  */
 static paddr_t getppages(unsigned long npages) {
-#if OPT_C2OS
+#if OPT_SHELL
 
 	/* Get the physical address of the pages */
 	paddr_t addr = getfreeppages(npages);
@@ -224,7 +225,7 @@ static paddr_t getppages(unsigned long npages) {
 		spinlock_release(&stealmem_lock);
 	}
 
-#if OPT_C2OS
+#if OPT_SHELL
 
 	if (addr != 0 && isTableActive()) {
 		/* Updating bitmap */
@@ -245,7 +246,7 @@ static paddr_t getppages(unsigned long npages) {
  * @param paddr starting address of the memory to release
  * @param size number of pages
  */
-#if OPT_C2OS
+#if OPT_SHELL
 static void freeppages(paddr_t paddr, unsigned long size) {
 
 	/* Checks if the table is active */
@@ -292,7 +293,7 @@ alloc_kpages(unsigned npages)
  * @param addr starting address
 */
 void free_kpages(vaddr_t addr) {
-#if OPT_C2OS
+#if OPT_SHELL
 	/* Checks if table is active */
 	if (isTableActive()) {
 
@@ -447,7 +448,7 @@ as_destroy(struct addrspace *as)
 {
     dumbvm_can_sleep();
 
-#if OPT_C2OS
+#if OPT_SHELL
     if (as) {
         if (as->as_pbase1) {
             freeppages(as->as_pbase1, as->as_npages1);

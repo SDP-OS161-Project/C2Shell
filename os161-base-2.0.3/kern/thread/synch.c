@@ -157,7 +157,7 @@ lock_create(const char *name)
 	HANGMAN_LOCKABLEINIT(&lock->lk_hangman, lock->lk_name);
 
         // add stuff here as needed
-#if OPT_C2OS
+#if OPT_SHELL
         lock->lk_wchan = wchan_create(lock->lk_name);
         if (lock->lk_wchan == NULL) 
         {
@@ -179,7 +179,7 @@ lock_destroy(struct lock *lock)
         KASSERT(lock != NULL);
 
         // add stuff here as needed
-#if OPT_C2OS
+#if OPT_SHELL
         spinlock_cleanup(&lock->lk_lock);
         wchan_destroy(lock->lk_wchan);
 #endif
@@ -194,7 +194,7 @@ lock_acquire(struct lock *lock)
 	//HANGMAN_WAIT(&curthread->t_hangman, &lock->lk_hangman);
 
         // Write this
-#if OPT_C2OS
+#if OPT_SHELL
         KASSERT(lock != NULL);
         KASSERT(lock_do_i_hold(lock) == false);
         KASSERT(curthread->t_in_interrupt == false);
@@ -220,7 +220,7 @@ lock_release(struct lock *lock)
 	//HANGMAN_RELEASE(&curthread->t_hangman, &lock->lk_hangman);
 
         // Write this
-#if OPT_C2OS
+#if OPT_SHELL
         KASSERT(lock != NULL);
         KASSERT(lock_do_i_hold(lock) == true);
         spinlock_acquire(&lock->lk_lock);
@@ -238,7 +238,7 @@ lock_do_i_hold(struct lock *lock)
 {
         // Write this
         bool res = true;
-#if OPT_C2OS
+#if OPT_SHELL
         spinlock_acquire(&lock->lk_lock);
 	res = (lock->lk_owner == curthread);
 	spinlock_release(&lock->lk_lock);
@@ -271,7 +271,7 @@ cv_create(const char *name)
         }
 
         // add stuff here as needed
-#if OPT_C2OS
+#if OPT_SHELL
         cv->cv_wchan = wchan_create(cv->cv_name);
         if (cv->cv_wchan == NULL) {
                 kfree(cv->cv_name);
@@ -290,7 +290,7 @@ cv_destroy(struct cv *cv)
         KASSERT(cv != NULL);
 
         // add stuff here as needed
-#if OPT_C2OS
+#if OPT_SHELL
         spinlock_cleanup(&cv->cv_lock);
         wchan_destroy(cv->cv_wchan);
 #endif
@@ -303,7 +303,7 @@ void
 cv_wait(struct cv *cv, struct lock *lock)
 {
         // Write this
-#if OPT_C2OS
+#if OPT_SHELL
         KASSERT(cv != NULL);
         KASSERT(lock != NULL);
         KASSERT(lock_do_i_hold(lock));
@@ -332,7 +332,7 @@ void
 cv_signal(struct cv *cv, struct lock *lock)
 {
         // Write this
-#if OPT_C2OS
+#if OPT_SHELL
         KASSERT(cv != NULL);
         KASSERT(lock != NULL);
         KASSERT(lock_do_i_hold(lock));
@@ -353,7 +353,7 @@ void
 cv_broadcast(struct cv *cv, struct lock *lock)
 {
 	// Write this
-#if OPT_C2OS
+#if OPT_SHELL
         KASSERT(cv != NULL);
         KASSERT(lock != NULL);
         KASSERT(lock_do_i_hold(lock));
